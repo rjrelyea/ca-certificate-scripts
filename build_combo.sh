@@ -15,6 +15,7 @@ baseurl="https://hg.mozilla.org/releases/mozilla-release/raw-file/default/securi
 release_type="RTM"
 release="3_43"
 verbose=1
+CURRENT_RELEASES="rhel-7.8 rhel-8.2.0" # HACK should query bugzilla or brew or something for these
 
 finish() {
     rm -rf ${SCRATCH}
@@ -55,6 +56,7 @@ addpatch()
    nss_version=$5
    ckbi_version=$6
    new_version=$7
+   restart_release=$8
 
    inPatches=0
    inSetup=0
@@ -118,10 +120,10 @@ addpatch()
 	if [ -z ${new_version} ]; then
 	    release=`echo $line | sed -e 's;^Release: ;;'`
             # this magic strips the leading number and increments it, so 5.1
-            # becomes 6
+            # becomes 6. NOTE: It's probably better if we increment 5.1 to be 5.2
             release=$(expr ${release%%[^0-9]*} + 1)
 	else
-	    release=1
+	    release=${restart_release}
 	fi
         echo "Release: ${release}%{?dist}"
         continue
@@ -130,8 +132,8 @@ addpatch()
     if [ $?  -eq 0 ]; then
         echo "$line"
 	mklog ${version}-${release}
-        echo "Update to CKBI ${ckbi_version} from NSS ${nss_version}"
-	cat ${CERT_LOG}
+        echo "- Update to CKBI ${ckbi_version} from NSS ${nss_version}"
+	cat ${CERT_LOG} | sed -e 's;^;- ;'
         echo ""
         continue
     fi
@@ -221,7 +223,7 @@ openssl_update()
    # update our spec file
    cd ${OPENSSLPACKAGEDIR}
    echo ">>> update openssl.spec"
-   addpatch openssl.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version}
+   addpatch openssl.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} "1"
    if [ ${verbose} -eq 1 ]; then
       git --no-pager diff openssl.spec
    fi
@@ -287,7 +289,7 @@ nss_update()
    gendiff . .ca-${ckbi_version} > ${SCRATCH}/SOURCES/nss-${RELEASE}-ca-${ckbi_version}.patch
    cd ${SCRATCH}/SPECS
    echo ">>> update nss.spec"
-   addpatch nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch .ca-${ckbi_version} ${SCRATCH}/cert_log ${nss_version} ${ckbi_version}
+   addpatch nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch .ca-${ckbi_version} ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} "1"
    echo ">>> verify updated nss.spec"
    rpmbuild -bp nss.spec --define="%_topdir ${SCRATCH}" --quiet --nodeps
    if [ $? -ne 0 ]; then
@@ -318,6 +320,8 @@ cacertificates_update()
    ckbi_version=$5
    SCRATCH=$6
    RELEASE=$7
+   RESTART_RELEASE_Z=$8
+   RESTART_RELEASE_BASE=$9
 
    if [ ! -f ${CERTDATA} ]; then
 	echo "!!!Skipping ca-certificates build for ${RELEASE}. no certdata.txt generated"
@@ -326,6 +330,11 @@ cacertificates_update()
    if [ ! -d ${CACERTSPACKAGEDIR} ]; then
 	echo "!!!Skipping ca-certificates build for ${RELEASE}. no git repository found"
         return 1
+   fi
+   if  echo $(CURRENT_RELEASES) | grep $RELEASE ; then
+      restart_release=${RESTART_RELEASE_BASE}
+   else
+      restart_release=${RESTART_RELEASE_Z}
    fi
    mkdir -p ${SCRATCH}
    # create an NSS build directory
@@ -339,7 +348,7 @@ cacertificates_update()
    echo ">>> update ca-certificates.spec file"
    export LANG=C
    year=`date +"%Y"`
-   addpatch ca-certificates.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} ${year}.${ckbi_version}
+   addpatch ca-certificates.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} ${year}.${ckbi_version} ${restart_release}
    cp ${CERTDATA} .
    if [ ${verbose} -eq 1 ]; then
    	git --no-pager diff ca-certificates.spec 
@@ -418,17 +427,25 @@ echo "******************************************************************"
 echo "*                   Setting up directories                       *"
 echo "******************************************************************"
 rm -rf ${PACKAGES} ${MODIFIED} ${CACERTS}
-mkdir -p ${MODIFIED}/rhel7_4/ca-certificates
-mkdir -p ${MODIFIED}/rhel7_4/nss
-mkdir -p ${MODIFIED}/rhel7_5/ca-certificates
-mkdir -p ${MODIFIED}/rhel7_5/nss
-mkdir -p ${MODIFIED}/rhel8/ca-certificates
-mkdir -p ${MODIFIED}/rhel6_10/ca-certificates
-mkdir -p ${MODIFIED}/rhel6_10/nss
-mkdir -p ${MODIFIED}/rhel6_7/ca-certificates
-mkdir -p ${MODIFIED}/rhel6_7/nss
-mkdir -p ${MODIFIED}/rhel5/nss
-mkdir -p ${MODIFIED}/rhel5/openssl
+if [ -n "${RHEL7o}" ]; then
+   mkdir -p ${MODIFIED}/rhel7_4/ca-certificates
+   mkdir -p ${MODIFIED}/rhel7_4/nss
+fi
+if [ -n "${RHEL7}" ]; then
+    mkdir -p ${MODIFIED}/rhel7_5/ca-certificates
+    mkdir -p ${MODIFIED}/rhel7_5/nss
+fi
+if [ -n "${RHEL8}" ]; then
+    mkdir -p ${MODIFIED}/rhel8/ca-certificates
+fi
+if [ -n "${RHEL6}" ]; then
+    mkdir -p ${MODIFIED}/rhel6_10/ca-certificates
+    mkdir -p ${MODIFIED}/rhel6_10/nss
+fi
+if [ -n "${RHEL5}" ]; then
+    mkdir -p ${MODIFIED}/rhel5/nss
+    mkdir -p ${MODIFIED}/rhel5/openssl
+fi
 mkdir -p ${PACKAGES}
 mkdir -p ${CACERTS}
 
@@ -437,12 +454,12 @@ echo "******************************************************************"
 echo "*                   Fetching Sources                             *"
 echo "******************************************************************"
 if [ -z "${certdatadir}" ]; then
-    nss_version=`wget -q ${baseurl}/nss/nss.h -O - | grep "NSS_VERSION" | awk '{print $3}' | sed -e "s;\";;g" `
-    if [ "${nss_version}" = "" ]; then
-        echo "Didn't find nss version from ${baseurl}"
-        exit 1;
-    fi
     cd ${CACERTS}
+    wget -q ${baseurl}/nss/nss.h -O nss.h
+    if [ $? -ne 0 ]; then
+       echo fetching nss.h from ${baseurl} failed!
+       exit 1;
+    fi
     wget -q ${baseurl}/ckfw/builtins/nssckbi.h -O nssckbi.h
     if [ $? -ne 0 ]; then
        echo fetching nssckbi.h from ${baseurl} failed!
@@ -455,23 +472,24 @@ if [ -z "${certdatadir}" ]; then
     fi
 else
     cd ${certdatadir}
-    nss_version=`grep "NSS_VERSION" nss.h | awk '{print $3}' | sed -e "s;\";;g" `
-    if [ "${nss_version}" = "" ]; then
-        echo "Didn't find nss version from ${baseurl}"
-        exit 1;
+    cp nss.h ${CACERTS}
+    if [ ! -f nss.h ]; then
+       echo copying nss.h from ${certdatadir} failed!
+       exit 1;
     fi
-    cp nssckbi.h $(CACERTS)
+    cp nssckbi.h ${CACERTS}
     if [ ! -f nssckbi.h ]; then
        echo copying nssckbi.h from ${certdatadir} failed!
        exit 1;
     fi
-    cp certdata.txt $(CACERTS)
+    cp certdata.txt ${CACERTS}
     if [ $? -ne 0 ]; then
        echo copying certdata.txt from ${certdata} failed!
        exit 1;
     fi
     cd ${CACERTS}
 fi
+nss_version=`grep "NSS_VERSION" nss.h | awk '{print $3}' | sed -e "s;\";;g" `
 ckbi_version=`grep "NSS_BUILTINS_LIBRARY_VERSION " nssckbi.h | awk '{print $NF}' | sed -e "s;\";;g" `
 
 # now fetch the relevant builds
@@ -480,25 +498,40 @@ echo ">> fetching ca-certificates"
 rhpkg -q clone -B ca-certificates
 echo ">> fetching nss"
 rhpkg -q clone -B nss
-echo ">> fetching openssl"
-rhpkg -q clone -B openssl
+if [ -n "${RHEL5}" ]; then
+    echo ">> fetching openssl"
+    rhpkg -q clone -B openssl
+fi
 
 # modify certdata.txt
 cd ${SCRIPT_LOC}
 echo "******************************************************************"
 echo "*          Modifying certdata.txt for releases                   *"
 echo "******************************************************************"
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel8/ca-certificates/certdata.txt
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_5/nss/certdata.txt --without-legacy-choice
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt --add-legacy-codesign
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_4/nss/certdata.txt --add-legacy-codesign --without-legacy-choice
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt --add-legacy-1024bit --add-legacy-codesign
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_7/ca-certificates/certdata.txt --add-legacy-1024bit --add-legacy-codesign --without-ca-policy-attribute
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_7/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
-./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/openssl/certdata.txt --add-legacy-1024bit --without-legacy-choice --without-ca-policy-attribute
+if [ -n "${RHEL8}" ]; then
+     echo " - Creating RHEL 8 certdata.txt rhel8=${RHEL8} "
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel8/ca-certificates/certdata.txt
+fi
+if [ -n "${RHEL7}" ]; then
+     echo " - Creating RHEL 7 certdata.txt rhel7=${RHEL7}"
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_5/nss/certdata.txt --without-legacy-choice
+fi
+if [ -n "${RHEL7o}" ]; then
+     echo " - Creating RHEL 7.4 certdata.txt rhel7o=${RHEL7o}"
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt --add-legacy-codesign
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel7_4/nss/certdata.txt --add-legacy-codesign --without-legacy-choice
+fi
+if [ -n "${RHEL6}" ]; then
+     echo " - Creating RHEL 6 certdata.txt rhel6=${RHEL6}"
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt --add-legacy-1024bit --add-legacy-codesign
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
+fi
+if [ -n ${RHEL5} ]; then
+     echo " - Creating RHEL 5 certdata.txt rhel5=${RHEL5}"
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/openssl/certdata.txt --add-legacy-1024bit --without-legacy-choice --without-ca-policy-attribute
+fi
 
 # update the relevant builds
 echo "******************************************************************"
@@ -520,7 +553,7 @@ do
    nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel6_10/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
    errors=$(expr $errors + $?)
    echo "********************** ca-certificaes $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
+   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "60.0" "61"
    errors=$(expr $errors + $?)
 done
 for i in ${RHEL7o}
@@ -529,7 +562,7 @@ do
    nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel7_4/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
    errors=$(expr $errors + $?)
    echo "********************** ca-certificaes $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
+   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
    errors=$(expr $errors + $?)
 done
 for i in ${RHEL7}
@@ -538,13 +571,13 @@ do
    nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel7_5/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
    errors=$(expr $errors + $?)
    echo "********************** ca-certificaes $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
+   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
    errors=$(expr $errors + $?)
 done
 for i in ${RHEL8}
 do
    echo "********************** ca-certificaes $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
+   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "80.0" "81"
    errors=$(expr $errors + $?)
 done
 echo "Finished updates with ${errors} errors"
