@@ -70,6 +70,7 @@ addpatch()
 #
     if [ "${PATCH}" != "NONE" ]; then
 	echo $line | grep "^Patch.*: " > /dev/null
+        # Find the first patch source block, and find the next patch number
 	if [ $? -eq 0 -a ${inPatches} -le 1 ]; then
 	    lpatchnum=`echo ${line} | sed -e 's;^Patch;;'`
 	    lpatchnum=${lpatchnum%%[^0-9]*}
@@ -80,19 +81,23 @@ addpatch()
 	    echo "$line";
             continue;
 	fi
+        # Find the first patch setup block
 	echo $line | grep "^%patch" > /dev/null
         if [ $? -eq 0 -a ${inSetup} -le 1 ]; then
 	    inSetup=1;
 	    echo "$line";
 	    continue;
 	fi
+        # handle the end of the block
 	if [[ ! ${line} =~ [^[:space:]] ]]; then
+            # add the new patch source
 	    if [ $inPatches -eq 1 ]; then
 		patchnum=`expr ${maxpatch} + 1`
 		echo "# Update certdata.txt to version $ckbi_version"
 		echo "Patch${patchnum}: ${PATCH}"
 		inPatches=2
 	    fi
+            # add the new patch
 	    if [ $inSetup -eq 1 ]; then
 		echo "%patch${patchnum} -p1 -b ${PATCH_ORIG}"
 		inSetup=2
@@ -101,12 +106,26 @@ addpatch()
             continue;
          fi
     fi
+# fetch and symbols likely used in the version number, currently only NSS
+    echo $line | grep "^%global" > /dev/null
+    if [ $? -eq 0 ]; then
+	echo $line | read glob sym value;
+        case "${sym}" in
+        "nss_version") glob_nss_version=value;;
+        *) ;;
+        esac
+        echo "$line"
+        continue;
+   fi
 # update the version if we've supplied it, otherwise not the version for the log
     echo $line | grep "^Version: " > /dev/null
     if [ $? -eq 0 ]; then
+        # if we have a new version number, replace it, 
+        # if not remember the old one for our log
 	if [ -z ${new_version} ]; then
 	    echo "$line"
 	    version=`echo $line | sed -e 's;^Version: ;;'`
+	    version=`echo $version | sed -e 's;%{nss_version};'${glob_nss_version}';g'`
 	else
 	    version=${new_version}
             echo "Version: ${version}"
@@ -223,7 +242,7 @@ openssl_update()
    # update our spec file
    cd ${OPENSSLPACKAGEDIR}
    echo ">>> update openssl.spec"
-   addpatch openssl.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} "1"
+   addpatch openssl.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} 
    if [ ${verbose} -eq 1 ]; then
       git --no-pager diff openssl.spec
    fi
@@ -289,7 +308,7 @@ nss_update()
    gendiff . .ca-${ckbi_version} > ${SCRATCH}/SOURCES/nss-${RELEASE}-ca-${ckbi_version}.patch
    cd ${SCRATCH}/SPECS
    echo ">>> update nss.spec"
-   addpatch nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch .ca-${ckbi_version} ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} "1"
+   addpatch nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch .ca-${ckbi_version} ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} 
    echo ">>> verify updated nss.spec"
    rpmbuild -bp nss.spec --define="%_topdir ${SCRATCH}" --quiet --nodeps
    if [ $? -ne 0 ]; then
@@ -331,7 +350,7 @@ cacertificates_update()
 	echo "!!!Skipping ca-certificates build for ${RELEASE}. no git repository found"
         return 1
    fi
-   if  echo $(CURRENT_RELEASES) | grep $RELEASE ; then
+   if  echo ${CURRENT_RELEASES} | grep $RELEASE ; then
       restart_release=${RESTART_RELEASE_BASE}
    else
       restart_release=${RESTART_RELEASE_Z}
@@ -525,9 +544,9 @@ fi
 if [ -n "${RHEL6}" ]; then
      echo " - Creating RHEL 6 certdata.txt rhel6=${RHEL6}"
     ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt --add-legacy-1024bit --add-legacy-codesign
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/nss/certdata.txt --add-legacy-codesign --without-legacy-choice 
 fi
-if [ -n ${RHEL5} ]; then
+if [ -n "${RHEL5}" ]; then
      echo " - Creating RHEL 5 certdata.txt rhel5=${RHEL5}"
     ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
     ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/openssl/certdata.txt --add-legacy-1024bit --without-legacy-choice --without-ca-policy-attribute
