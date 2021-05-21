@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2
 #
 # certdata-upstream-to-certdata-rhel.py
 # Copyright (C) 2017-2018 Kai Engert <kaie@redhat.com>

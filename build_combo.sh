@@ -15,7 +15,7 @@ baseurl="https://hg.mozilla.org/releases/mozilla-release/raw-file/default/securi
 release_type="RTM"
 release="3_43"
 verbose=1
-CURRENT_RELEASES="master rhel-7.8 rhel-8.2.0" # HACK should query bugzilla or brew or something for these
+CURRENT_RELEASES="master rhel-7.9 rhel-8.3.0" # HACK should query bugzilla or brew or something for these
 RHEL_NSS=0
 RHEL_OPENSSL=0
 RHEL_CACERTS=0
@@ -485,34 +485,42 @@ echo "******************************************************************"
 echo "*                   Fetching Sources                             *"
 echo "******************************************************************"
 if [ -z "${certdatadir}" ]; then
+    echo "fetching source data from mozilla:\nbaseurl:${baseurl}\ntarget:${CACERTS}"
     cd ${CACERTS}
+    echo ">> fetching nss/nss.h"
     wget -q ${baseurl}/nss/nss.h -O nss.h
     if [ $? -ne 0 ]; then
        echo fetching nss.h from ${baseurl} failed!
        exit 1;
     fi
+    echo ">> fetching ckfw/buildtins/nssckbi.h"
     wget -q ${baseurl}/ckfw/builtins/nssckbi.h -O nssckbi.h
     if [ $? -ne 0 ]; then
        echo fetching nssckbi.h from ${baseurl} failed!
        exit 1;
     fi
+    echo ">> fetching ckfw/builtins/certdata.txt"
     wget -q ${baseurl}/ckfw/builtins/certdata.txt -O certdata.txt
     if [ $? -ne 0 ]; then
        echo fetching certdata.txt from ${baseurl} failed!
        exit 1;
     fi
 else
+    echo "copying source data from directory\nsource:${certdatadir}\ntarget:${CACERTS}"
     cd ${certdatadir}
+    echo ">> copying ${certdatadir}/nss.h"
     cp nss.h ${CACERTS}
     if [ ! -f nss.h ]; then
        echo copying nss.h from ${certdatadir} failed!
        exit 1;
     fi
+    echo "copying ${certdatadir}/nssckbi.h"
     cp nssckbi.h ${CACERTS}
     if [ ! -f nssckbi.h ]; then
        echo copying nssckbi.h from ${certdatadir} failed!
        exit 1;
     fi
+    echo "copying ${certdatadir}/certdata.txt"
     cp certdata.txt ${CACERTS}
     if [ $? -ne 0 ]; then
        echo copying certdata.txt from ${certdata} failed!
