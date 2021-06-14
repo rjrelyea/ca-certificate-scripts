@@ -11,15 +11,20 @@ CACERTS=${SCRIPT_LOC}/cacerts
 PACKAGES=${SCRIPT_LOC}/packages
 MODIFIED=${SCRIPT_LOC}/modified
 SCRATCH=${SCRIPT_LOC}/scratch.$$
+META_DATA=${SCRIPT_LOC}/meta
 baseurl="https://hg.mozilla.org/releases/mozilla-release/raw-file/default/security/nss/lib"
 release_type="RTM"
-release="3_43"
+release="3_66"
 verbose=1
-CURRENT_RELEASES="master rhel-7.9 rhel-8.3.0" # HACK should query bugzilla or brew or something for these
+CURRENT_RELEASES="rawhide rhel-7.9 rhel-8.5.0" # HACK should query bugzilla or brew or something for these
 RHEL_NSS=0
 RHEL_OPENSSL=0
 RHEL_CACERTS=0
 FEDORA_CACERTS=0
+PRUNE_DATE=today
+MERGE_OBJECT_SIGN=0
+RHEL_LIST=${META_DATA}/rhel.list
+FEDORA_LIST=${META_DATA}/fedora.list
 
 finish() {
     rm -rf ${SCRATCH}
@@ -388,6 +393,7 @@ trap finish EXIT
 #
 # Parse the arguments
 #
+rootPath=$(pwd)
 while [ -n "$1" ]; do
    case $1 in
    "-q")
@@ -415,15 +421,23 @@ while [ -n "$1" ]; do
         baseurl="https://hg.mozilla.org/projects/nss/raw-file/NSS_${release}_${release_type}/lib"
         ;;
    -f*)
-	certdatadir=`echo $i | sed -e 's;-f;;'`
+	certdatadir=`echo $1 | sed -e 's;-f;;'`
         if [ "${certdatadir}" = "" ]; then
            shift
            certdatadir=$1
         fi
         ;;
+    -p*)
+	PRUNE_DATE=`echo $1 | sed -e 's;-p;;'`
+        if [ "${PRUNE_DATE}" = "" ]; then
+           shift
+           PRUNE_DATE=$1
+        fi
+        ;;
     rhel-5*) RHEL5="${RHEL5} $1"; RHEL_NSS=1; RHEL_OPENSSL=1;;
     rhel-6*) RHEL6="${RHEL6} $1"; RHEL_NSS=1; RHEL_CACERTS=1;;
     rhel-8*) RHEL8="${RHEL8} $1"; RHEL_CACERTS=1;;
+    rhel-9*) RHEL9="${RHEL9} $1"; RHEL_CACERTS=1;;
     rhel-7*) if [ $1 \< "rhel-7.5" ]; then
 	       RHEL7o="${RHEL7o} $1"
 	    fi
@@ -435,7 +449,7 @@ while [ -n "$1" ]; do
 	    fi
 	    RHEL_NSS=1; RHEL_CACERTS=1;
 	    ;;
-     f*|master)
+     f*|rawhide)
             FEDORA="${FEDORA} $1"; FEDORA_CACERTS=1;;
     *)
         echo "usage: $0 [-r] [-t nss_type] [-n nss_release] [-f] rhel_releases"
@@ -453,9 +467,10 @@ done
 echo "******************************************************************"
 echo "*                   Setting up directories                       *"
 echo "******************************************************************"
-rm -rf ${PACKAGES} ${MODIFIED} ${CACERTS}
+rm -rf ${PACKAGES} ${MODIFIED} ${CACERTS} ${META_DATA}
 mkdir -p ${PACKAGES}
 mkdir -p ${CACERTS}
+mkdir -p ${META_DATA}
 if [ -n "${RHEL7o}" ]; then
    mkdir -p ${MODIFIED}/rhel7_4/ca-certificates
    mkdir -p ${MODIFIED}/rhel7_4/nss
@@ -466,6 +481,9 @@ if [ -n "${RHEL7}" ]; then
 fi
 if [ -n "${RHEL8}" ]; then
     mkdir -p ${MODIFIED}/rhel8/ca-certificates
+fi
+if [ -n "${RHEL9}" ]; then
+    mkdir -p ${MODIFIED}/rhel9/ca-certificates
 fi
 if [ -n "${RHEL6}" ]; then
     mkdir -p ${MODIFIED}/rhel6_10/ca-certificates
@@ -479,13 +497,17 @@ if [ -n "${FEDORA}" ]; then
     mkdir -p ${MODIFIED}/fedora/ca-certificates
     mkdir -p ${PACKAGES}/fedora
 fi
+touch ${RHEL_LIST}
+touch ${FEDORA_LIST}
 
 #fetch everthing we need. First certdata and nssckbi
 echo "******************************************************************"
 echo "*                   Fetching Sources                             *"
 echo "******************************************************************"
 if [ -z "${certdatadir}" ]; then
-    echo "fetching source data from mozilla:\nbaseurl:${baseurl}\ntarget:${CACERTS}"
+    echo "fetching source data from mozilla:"
+    echo " baseurl:${baseurl}"
+    echo " target:${CACERTS}"
     cd ${CACERTS}
     echo ">> fetching nss/nss.h"
     wget -q ${baseurl}/nss/nss.h -O nss.h
@@ -500,13 +522,26 @@ if [ -z "${certdatadir}" ]; then
        exit 1;
     fi
     echo ">> fetching ckfw/builtins/certdata.txt"
-    wget -q ${baseurl}/ckfw/builtins/certdata.txt -O certdata.txt
+    wget -q ${baseurl}/ckfw/builtins/certdata.txt -O certdata.txt.orig
     if [ $? -ne 0 ]; then
        echo fetching certdata.txt from ${baseurl} failed!
        exit 1;
     fi
+    if [ ${MERGE_OBJECT_SIGN} -ne 0 ]; then
+        echo ">> fetching signed objects certs"
+        sign_obj_cas="microsoft_sign_obj_ca.pem"
+        echo ${rootPath}/fetch_objsign.sh -n -o "${sign_obj_cas}"
+        ${rootPath}/fetch_objsign.sh -n -o "${sign_obj_cas}"
+        python3 ${rootPath}/mergepem2certdata.py -c "certdata.txt.orig" -p "${sign_obj_cas}" -o "certdata.txt" -t "CKA_TRUST_CODE_SIGNING" -l "Microsoft Code Signing Only Certificate" -x "${PRUNE_DATE}"
+    else
+        # add date prune script here?
+        cp certdata.txt.orig certdata.txt
+    fi
+
 else
-    echo "copying source data from directory\nsource:${certdatadir}\ntarget:${CACERTS}"
+    echo "copying source data from directory"
+    echo " nsource:${certdatadir}"
+    echo " target:${CACERTS}"
     cd ${certdatadir}
     echo ">> copying ${certdatadir}/nss.h"
     cp nss.h ${CACERTS}
@@ -530,6 +565,9 @@ else
 fi
 nss_version=`grep "NSS_VERSION" nss.h | awk '{print $3}' | sed -e "s;\";;g" `
 ckbi_version=`grep "NSS_BUILTINS_LIBRARY_VERSION " nssckbi.h | awk '{print $NF}' | sed -e "s;\";;g" `
+
+echo ${nss_version} > ${META_DATA}/nssversion.txt
+echo ${ckbi_version} > ${META_DATA}/ckbiversion.txt
 
 # now fetch the relevant builds
 cd ${PACKAGES}
@@ -560,6 +598,10 @@ echo "******************************************************************"
 if [ -n "${FEDORA}" ]; then
      echo " - Creating FEDORA certdata.txt fedora=${FEDORA} "
     ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/fedora/ca-certificates/certdata.txt
+fi
+if [ -n "${RHEL9}" ]; then
+     echo " - Creating RHEL 9 certdata.txt rhel9=${RHEL9} "
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel9/ca-certificates/certdata.txt
 fi
 if [ -n "${RHEL8}" ]; then
      echo " - Creating RHEL 8 certdata.txt rhel8=${RHEL8} "
@@ -599,6 +641,7 @@ do
    echo "**************************** nss $i ******************************"
    nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel5/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
    errors=$(expr $errors + $?)
+   echo $i:nss,openssl:0:0::staged >> ${RHEL_LIST}
 done
 for i in ${RHEL6}
 do
@@ -608,6 +651,7 @@ do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "60.0" "61"
    errors=$(expr $errors + $?)
+   echo $i:ca-certificates,nss:0:0::staged >> ${RHEL_LIST}
 done
 for i in ${RHEL7o}
 do
@@ -617,6 +661,7 @@ do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_4/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
    errors=$(expr $errors + $?)
+   echo $i:ca-certificates,nss:0,0::staged >> ${RHEL_LIST}
 done
 for i in ${RHEL7}
 do
@@ -626,20 +671,30 @@ do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
    errors=$(expr $errors + $?)
+   echo $i:ca-certificates,nss:0:0::staged >> ${RHEL_LIST}
 done
 for i in ${RHEL8}
 do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel8/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "80.0" "81"
    errors=$(expr $errors + $?)
+   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
+done
+for i in ${RHEL9}
+do
+   echo "********************** ca-certificates $i *************************"
+   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
+   errors=$(expr $errors + $?)
+   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
 done
 for i in ${FEDORA}
 do
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/fedora/ca-certificates/$i ${MODIFIED}/fedora/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "1.0" "2"
    errors=$(expr $errors + $?)
+   echo $i:ca-certificates:0:0::staged >> ${FEDORA_LIST}
 done
-echo "Finished updates with ${errors} errors"
+echo "Finished updates for ca-certificates ${cki_version} from NSS ${nss_version} with ${errors} errors"
 cd ${SCRIPT_LOC}
 echo "The following directories are ready for checkin:"
 find packages -name checkin.log -print | sed -e 's;/checkin.log;;'

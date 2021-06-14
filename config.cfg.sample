@@ -1,0 +1,7 @@
+owner:package_owner@redhat.com
+manager:package_owner_manager@redhat.com
+qe:package_qe@redhat.com
+bugzilla_login:bugzills@redhat.com
+bugzilla_password:mybugzillapw
+#firefox:91
+#version:2.48
