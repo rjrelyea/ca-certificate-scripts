@@ -1,0 +1,155 @@
+For the theory of ca-certificates update, see README.md.
+
+Automation implements everything in README.md as scripts (using some of the 
+scripts in that README).
+
+There are two main driving scripts to do this:
+
+./build_combo.sh
+Which takes a list of options as well as various releases you want to release:
+    ./build_combo.sh [-r] [-t nss_type] [-n nss_release] [-f] releases"
+        -d               use the development tip rather than the latest release
+        -n nss_release   fetch a specific nss release (default latest)
+        -t nss_type      type of nss release to fetch (RTM,BETA1,BETA2)
+        -f cert_datadir  fetch certdata.txt, nssckbi.h, and nss.h from a
+                         directory instead of upstream
+        releases:
+            fxx  for fedora builds
+            rawhide for fedora current developement builds
+            rhel-x.x for rhel5,rhel6,rhel7 builds
+            rhel-x.x.x for rhel-8,rhel-9 builds
+
+./build_combo.sh operation
+  - downloads the requested certdata.txt and headers from a particular 
+    NSS build into ./cacerts
+  - processes it for each release and puts the resulting certdata.txt in 
+   ./modified
+  - pulls the appropriate git trees under the ./packages and updates the
+    files in that release
+  - creates a file meta/rhel_list and meta/fedora_list which includes the
+    current releases and builds
+
+./process.py
+which takes the following options   
+    ./process.py [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase]')
+    -r rhel.list      location of the rhel.list (./meta/rhel.list)
+    -o owner.email    errata owner's email (read from config.cfg)
+    -m manager.email  errrata owner's manager's email( read from config.cfg)
+    -q qa.email       errata qa's email (read from config.cfg)
+    -v ckbi.version   ckbi version number read from ./meta/ckbiversion.txt)
+    -f firefox.version the version of firefox associated with this release
+    -y year           year of the release (current year)
+    -e errataurlbase  url of the errrata system (https://errata.devel.redhat.com)
+    -b bugurlbase     url of the bugzilla system (https://bugzilla.redhat.com)
+
+./process.py operation
+    process.py tries to do as much as possible in completing the tasks needed
+    for release.
+    -it looks up bugs, and if they don't exists creates time (exception: 
+     z-stream bugs are created by the system once the y-stream bug has moved
+     to MODIFIED). ./process.py knows this and only tries to look up the 
+     z-stream bugs.
+    - once bugs are created, the changes in the tree are committed with
+      the bug number.
+    - if the bugs have the appropriate acks, the changes are pushed to git.
+    - if the changes are pushed, and builds haven't been made, the system
+      tries to start builds
+    - if you have bugs in modified, erratas are creates (if the errata
+      already exists, it is found).
+    - if builds are complete, they are attached to the errata.
+    - bugs are attached to the errata.
+    - once erratas have complete builds and bugs attached, that release is
+      considered complete.
+
+before running ./process.py, you need to create a config.cfg file with the
+following:
+    manager:{errrata owner's manager's email}
+    ownerr:{errata owner's email}
+    qe:{errata qa's email}
+    bugzilla_login:{bugzilla login}
+    bugzilla_password:{bugzilla password}
+
+A sample config.cfg.sample is includes. config.cfg is in .gitignore to prevent
+pushing your private password to the public repository.
+
+If you don't include a bugzilla login/password, ./process.py may not be able
+find z-stream bugs, as well as create or modify bugs.
+If you don't supply (manager, owner, or qe), ./process.py will not be able to
+create erratas.
+
+On your first invocation of ./process.py, you need to specify a firefox
+release. ./process.py will remember that release on later calls.
+You will also make sure you have kerberos tokens or most operation will fail.
+
+The intension is ./process.py is ran periodically, it stops when blocked. 
+The tool outputs the final state, which indicates what needs to be done to 
+move forward:
+    state               meaning               action to move forward
+ waiting bug clone    waiting for a      The y-stream bug needs to be in the
+                      z-stream bug       modified state with the appropriate
+                      to be cloned       flags set.
+                      from the y-stream.
+                                                      
+ need bug             no bug for         * check bugzilla login info
+                      y-stream and       * verify bugzilla config
+                      create failed      * hand create bug with the subject
+                                         'Annual {year} ca-certificates update'
+
+ bug needs ack        bugs don't have    get the required acks
+                      the requires acks
+                      for checking
+
+ patch need push      patch is checked   git push probably failed, could be:
+                      in to git, but     * authentication failure
+                      push failed        * additional bug flags that are
+                                          missing.
+                                          running 'rhpkg push' by hand will
+                                           usually give the reason
+ builds not started   for some reason    rerun ./process.py. if problem
+                      builds are pushed, persists, try running 'rhpkg build'
+                      but the builds     by hand
+                      weren't started
+
+ builds failed        builds failed       check brew for the issue and correct
+
+ builds in progress   brew is currently   wait for builds to complete
+                      running builds
+
+ builds in gating     gating is running   check brew for the gating status
+                      on the build, or    if gating failed, diagnose gating
+                      gating has failed   error and fix
+
+ needs errata         no errata found     * make sure config.cfg is correct
+                      and create failed   * make sure you have valid kerberos
+                                          tickets
+                                          * hand create errata
+
+ need builds attached builds complete,    * make sure config.cfg is correct
+                      but not attached to * make sure you have valid kerberos
+                      errata              tickets
+                                          * hand add builds
+
+ needs bugs attached  bugs in modified    * make sure config.cfg is correct
+                      but not attached    * make sure you have valid kerberos
+                      to errata           tickets
+                                          * hand add builds
+ complete             Builds are complete
+                      and attached to
+                      errata, bugs are
+                      attached to errata
+The following states are error states in ./process.py and indicate a
+programming error or difficency in ./process.py:
+
+builds complete, state error - should not happen (problem with ./process.py)
+builds in an unknown state - should not happen (problem with ./process.py)
+
+You can complete any steps you want by hand and ./process.py will automatically
+recognize that step (checkin, pushing, building, errata and bug creation, etc).
+
+./meta/rhel.list includes the current state, you can modify ./meta/rhel.list
+to:
+   1) force a refresh (set bug and errata numbers to 0 will force a new lookup)
+   1) force a particular bug or errata number
+   2) removed packages
+   3) force a complete refresh (bug, errata=0 nvr='' state=stale)
+each run everything is refreshed except bug and errata numbers, and state=complete
