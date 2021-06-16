@@ -39,6 +39,7 @@ o.add_option('--add-legacy-1024bit', dest="add_legacy_1024bit", action="store_tr
 o.add_option('--add-legacy-codesign', dest="add_legacy_codesign", action="store_true", default=False)
 o.add_option('--without-legacy-choice', dest="with_legacy_choice", action="store_false", default=True)
 o.add_option('--without-ca-policy-attribute', dest="with_ca_policy", action="store_false", default=True)
+o.add_option('--without-disable-after', dest="with_disable_after", action="store_false", default=True)
 o.add_option('--input', dest="input", action="store", default="upstream-certdata.txt")
 o.add_option('--output', dest="output", action="store", default="rhel-certdata.txt")
 o.add_option('--legacy-codesign-input', dest="legacy_codesign_input", action="store", default="certdata-2.14-code-signing-trust.txt")
@@ -155,7 +156,7 @@ legacy_server = ""
 legacy_email = ""
 
 for line in open(options.input, 'r'):
-    if echo_line:
+    if echo_line and not in_multiline_skip:
         out.write(previous_line)
 
     echo_line = True
@@ -182,7 +183,7 @@ for line in open(options.input, 'r'):
             legacy_email = ""
         continue
 
-    if in_multiline:
+    if in_multiline or in_multiline_skip:
         if not line.startswith('END'):
             if type == 'MULTILINE_OCTAL':
                 line = line.strip()
@@ -191,8 +192,12 @@ for line in open(options.input, 'r'):
             else:
                 value += line
             continue
-        obj[field] = value
+        if in_multiline :
+            obj[field] = value
+        if in_multiline :
+            echo_line = False
         in_multiline = False
+        in_multiline_skip = False
         continue
     if line.startswith('CKA_CLASS'):
         in_obj = True
@@ -209,6 +214,13 @@ for line in open(options.input, 'r'):
     if field == 'CKA_NSS_MOZILLA_CA_POLICY' and not options.with_ca_policy:
         # Skip if we don't have options.with_ca_policy.
         echo_line = False
+        continue
+    if re.match('CKA_.*_DISTRUST_AFTER',field) and not options.with_distrust_after:
+        if type == 'MULTILINE_OCTAL':
+            # some distrust after entries are MULTI_LINE, we want to drop
+            # everything
+            in_multiline_skip = True
+            value = ""
         continue
 
     if field == 'CKA_CLASS':

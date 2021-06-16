@@ -14,7 +14,7 @@ SCRATCH=${SCRIPT_LOC}/scratch.$$
 META_DATA=${SCRIPT_LOC}/meta
 baseurl="https://hg.mozilla.org/releases/mozilla-release/raw-file/default/security/nss/lib"
 release_type="RTM"
-release="3_66"
+release="3_67"
 verbose=1
 CURRENT_RELEASES="rawhide rhel-7.9 rhel-8.5.0" # HACK should query bugzilla or brew or something for these
 RHEL_NSS=0
@@ -619,13 +619,13 @@ if [ -n "${RHEL7o}" ]; then
 fi
 if [ -n "${RHEL6}" ]; then
      echo " - Creating RHEL 6 certdata.txt rhel6=${RHEL6}"
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt --add-legacy-1024bit --add-legacy-codesign
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/nss/certdata.txt --add-legacy-codesign --without-legacy-choice 
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/ca-certificates/certdata.txt --add-legacy-1024bit --add-legacy-codesign --without-disable-after
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel6_10/nss/certdata.txt --add-legacy-codesign --without-legacy-choice  --without-disable-after
 fi
 if [ -n "${RHEL5}" ]; then
      echo " - Creating RHEL 5 certdata.txt rhel5=${RHEL5}"
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute
-    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/openssl/certdata.txt --add-legacy-1024bit --without-legacy-choice --without-ca-policy-attribute
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/nss/certdata.txt --add-legacy-codesign --without-legacy-choice --without-ca-policy-attribute --without-disable-after
+    ./certdata-upstream-to-certdata-rhel.py --input ${CACERTS}/certdata.txt --output ${MODIFIED}/rhel5/openssl/certdata.txt --add-legacy-1024bit --without-legacy-choice --without-ca-policy-attribute -without-disable-after
 fi
 
 # update the relevant builds
