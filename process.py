@@ -41,10 +41,24 @@ config_file='./config.cfg'
 errata_url_base='https://errata.devel.redhat.com'
 bugzilla_url_base='https://bugzilla.redhat.com'
 brew_url_base='https://brewweb.engineering.redhat.com/brew'
+koji_url_base='https://koji.fedoraproject.org/koji'
 ca_certs_file='/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
 bug_summary_short='Annual %s ca-certificates update'
 bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s [%s]'
 bug_description='Update CA certificates to version %s from NSS %s for our annual CA certficate update.'
+distro=None
+packages_dir = {
+    "rhel":"./packages/",
+    "fedora":"./packages/fedora/"
+}
+build_info_tool = {
+    "rhel":"brew",
+    "fedora":"koji"
+}
+package_tool = {
+    "rhel":"rhpkg",
+    "fedora":"fedpkg"
+}
 
 z_stream_clone = {
     "rhel-5.11":False,
@@ -212,7 +226,7 @@ def bug_create(release,version,nss_version,firefox_version,packages,token) :
     print(">>>would create bug with %s and"%url,bug)
     #r = requests.post(url, headers=headers, json=bug,
     #                 verify=ca_certs_file)
-    #if r.status_code == 201 :
+    #if r.status_code <= 299 :
     #    return int(r.json()['id'])
     #print('bug create status=%d'%r.status_code)
     #print('returned text=',r.text)
@@ -237,7 +251,7 @@ def bug_lookup(release, version, firefox_version, packages, token, zstream):
         url=bugzilla_url_base+"/rest/bug?product=%s&component=%s&version=%s&status=NEW&status=ASSIGNED&status=MODIFIED&status=ON_QA&limit=1&summary=%s"%(product_map[release],
              packages_list[0],bug_version_map[release],summary)
     r = requests.get(url, headers=headers, verify=ca_certs_file)
-    if r.status_code == 200 :
+    if r.status_code <= 299 :
         bugs = r.json()['bugs']
         if len(bugs) == 0 :
             print("bug for %s %s %s not found"%(release,packages_list[0],version))
@@ -251,7 +265,7 @@ def bug_login(login, password):
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=bugzilla_url_base+"/rest/login?login=%s&password=%s"%(login,password)
     r = requests.get(url, headers=headers, verify=ca_certs_file)
-    if r.status_code == 200 :
+    if r.status_code <= 299 :
         token = r.json()['token']
         bugzilla_token="token="+token
         return "token="+token
@@ -268,7 +282,7 @@ def bug_is_acked(bugnumber, token) :
     else :
         url += '?include_fields=flags'
     r = requests.get(url, headers=headers, verify=ca_certs_file)
-    if r.status_code != 200 :
+    if r.status_code > 299 :
         print('bug acked status=%d'%r.status_code)
         print('bug acked returned text=',r.text)
         return False
@@ -290,10 +304,10 @@ def bug_get_state(bugnumber) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=bugzilla_url_base+"/rest/bug/%d"%bugnumber
     r = requests.get(url, headers=headers, verify=ca_certs_file)
-    if r.status_code == 200 :
+    if r.status_code <= 299 :
         bugs = r.json()['bugs']
         if len(bugs) == 0 :
-            print("bug %d"%bugnumber)
+            print("bug get state bug %d not found"%bugnumber)
             return 'Unknown'
         return bugs[0]['status']
     print('bug get state status=%d'%r.status_code)
@@ -310,7 +324,7 @@ def bug_change_state(bugnumber, state, token):
 
     r = requests.put(url, headers=headers, json=bug,
                      verify=ca_certs_file)
-    if r.status_code == 200 :
+    if r.status_code <= 299 :
         return bug_get_state(bugnumber)
     print('bug change state status=%d'%r.status_code)
     print('returned text=',r.text)
@@ -360,7 +374,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     #r = requests.post(url, headers=headers, json=errata,
     #                 auth=HTTPKerberosAuth(),
     #                 verify=ca_certs_file)
-    #if r.status_code == 201 :
+    #if r.status_code <= 299 :
     #    return r.json()['id']
     #print('errata create status=%d'%r.status_code)
     #print('returned text=',r.text)
@@ -374,7 +388,7 @@ def errata_lookup(release, version, firefox_version, packages, bugnumber) :
     r = requests.get(url, headers=headers,
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
-    if r.status_code != 200 :
+    if r.status_code > 299 :
         print('errrata lookup status=%d'%r.status_code)
         print('text=',r.text)
         return 0
@@ -439,10 +453,26 @@ def errata_has_builds(errata, release, builds) :
             return False
     return True
 
+def errata_resync_bug(errata, bug) :
+    request= []
+    request.append(bug)
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    url=errata_url_base+"/api/v1/erratum/%d/bug/refresh"%errata
+    r = requests.post(url, headers=headers, json=request,
+                     auth=HTTPKerberosAuth(),
+                     verify=ca_certs_file)
+    if r.status_code <= 299 :
+        return
+    print('errata resync bug status=%d'%r.status_code)
+    print('text=',r.text)
+    return
+
 # add a bug to the errata
-def errata_add_bug(errata, bug) :
+def errata_add_bug(errata, bug, resync) :
     if errata_has_bug(errata, bug) :
         return
+    if (resync) :
+        errata_resync_bug(errata,bug)
     request= {}
     request['bug'] = bug
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
@@ -472,14 +502,13 @@ def errata_add_builds(errata, release, builds) :
         return 0
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=errata_url_base+"/api/v1/erratum/%d/add_builds"%errata
-    print("adding build...url",url)
-    #r = requests.post(url, headers=headers, json=request,
-    #                 auth=HTTPKerberosAuth(),
-    #                 verify=ca_certs_file)
-    #if r.status_code == 200 :
-    #    return
-    #print('errata add builds status=%d'%r.status_code)
-    #print('text=',r.text)
+    r = requests.post(url, headers=headers, json=request,
+                     auth=HTTPKerberosAuth(),
+                     verify=ca_certs_file)
+    if r.status_code <= 299 :
+        return
+    print('errata add builds status=%d'%r.status_code)
+    print('text=',r.text)
     return
 
 #
@@ -515,11 +544,11 @@ def git_repo_state(repo):
     return 'pushed'
 
 def git_get_state(release, package, bugnumber):
-    repo = git.Repo("packages/%s/%s"%(package,release))
+    repo = git.Repo(packages_dir[distro]+"%s/%s"%(package,release))
     return git_repo_state(repo)
 
 def git_checkin(release, package, bugnumber):
-    gitdir="packages/%s/%s"%(package,release)
+    gitdir=packages_dir[distro]+"%s/%s"%(package,release)
     repo = git.Repo(gitdir)
     index = repo.index
     # first put all the files in 'staged'
@@ -541,14 +570,15 @@ def git_checkin(release, package, bugnumber):
     f=open("%s/%s"%(gitdir,checkin_log),"r")
     message=f.read()
     f.close()
-    message="Resolves: rhbz#%s\n\n"%bugnumber + message
+    if bugnumber != -1 :
+        message="Resolves: rhbz#%s\n\n"%bugnumber + message
     #do the checkin
     print("checking in:",gitdir)
     index.commit(message)
     return git_repo_state(repo)
 
 def git_push(release, package, bugnumber):
-    gitdir="packages/%s/%s"%(package,release)
+    gitdir=packages_dir[distro]+"%s/%s"%(package,release)
     repo = git.Repo(gitdir)
     repo.remotes.origin.push()
     return git_repo_state(repo)
@@ -570,14 +600,15 @@ def builds_complete(nvrlist,packages) :
 def add_nvr(nvrlist, nvr) :
     if nvr == None or nvr == '' :
        return nvrlist
+    if nvrlist == '' :
+        return nvr
     nlist=nvrlist.split(',')
     nlist.append(nvr)
-    print("nlist=",nlist)
     return ','.join(nlist)
 
 # todo use brew rest api?
 def build_state(nvr) :
-    out=subprocess.Popen("brew buildinfo %s"%nvr,shell=True, stdin=None,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,close_fds=True)
+    out=subprocess.Popen("%s buildinfo %s"%(build_info_tool[distro],nvr),shell=True, stdin=None,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,close_fds=True)
     brew_response = out.communicate()[0].decode("utf-8").split('\n')
     if len(brew_response) == 0 :
         return 'Nobuilds'
@@ -602,7 +633,7 @@ def build_state(nvr) :
                 return 'Nobuilds'
         if line.startswith('Tags: ') :
             tag=True
-            if line.find('-candidate') != -1 :
+            if distro == 'fedora' or line.find('-candidate') != -1 :
                 gating=False
         if complete and tag :
             if gating :
@@ -616,9 +647,9 @@ def build_state(nvr) :
 # than the other states.
 def merge_state(state, state2) :
     # first, states of Complete or None have lowest priority
-    if state == None or state == Complete:
+    if state == None or state == 'Complete':
         return state2
-    if state2 == None or state2 == Complete:
+    if state2 == None or state2 == 'Complete':
         return state
     # if they are equal, return them
     if state == state2 :
@@ -636,7 +667,7 @@ def merge_state(state, state2) :
     return 'Building'
 
 def build_nvr(release,package):
-    packagedir="packages/%s/%s"%(package,release)
+    packagedir=packages_dir[distro]+"%s/%s"%(package,release)
     if not os.path.exists(packagedir):
         return None
     if not release in build_nvr.cache :
@@ -647,7 +678,7 @@ def build_nvr(release,package):
     pushd=os.getcwd()
     os.chdir(packagedir)
 
-    stream=os.popen('rhpkg verrel')
+    stream=os.popen("%s verrel"%package_tool[distro])
     nvr = stream.read().strip()
     os.chdir(pushd)
     build_nvr.cache[release][package]=nvr
@@ -663,7 +694,7 @@ def build_get_info(release, package) :
     nvr = build_nvr(release, package)
     state = build_state(nvr)
 
-    out=subprocess.Popen("brew buildinfo %s"%nvr,shell=True, stdin=None,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,close_fds=True)
+    out=subprocess.Popen("%s buildinfo %s"%(build_info_tool[distro],nvr),shell=True, stdin=None,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,close_fds=True)
     brew_response = out.communicate()[0].decode("utf-8").split('\n')
     if len(brew_response) == 0 :
         return ( '', nvr, state )
@@ -688,12 +719,11 @@ def build(release,package):
     if state == 'Building' or state == 'Gating' :
         return ''
     # for failed, or nobuilds, time to make builds
-    packagedir="packages/%s/%s"%(package,release)
+    packagedir=packages_dir[distro]+"%s/%s"%(package,release)
 
     pushd=os.getcwd()
     os.chdir(packagedir)
-    print(">>>would run  builds for %s in directory %s state=%s"%(nvr,packagedir,state))
-    os.system('rhpkg build')
+    os.system("%s build"%package_tool[distro])
     os.chdir(pushd)
     state = build_state(nvr)
     if state == 'Complete' :
@@ -710,7 +740,7 @@ try:
     opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:",)
 except getopt.GetoptError as err:
     print(err)
-    print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase]')
+    print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-b bugzillaurlbase]')
     sys.exit(2)
 
 
@@ -767,6 +797,8 @@ for opt, arg in opts:
         year = arg
     elif opt == '-e' :
         errata_url_base = arg
+    elif opt == '-b' :
+        bugzilla_url_base = arg
 
 qe_line=''
 if  qe != None :
@@ -784,11 +816,12 @@ if not os.path.exists(firefox_info) :
 if bugzilla_login != None :
     bugzilla_token=bug_login(bugzilla_login,bugzilla_password)
 
-checkins = {}
+rhel_packages = {}
+fedora_packages = {}
 
 #######################################################
 #
-# read in our status file
+# read in our status files
 #
 #######################################################
 for rhel_entry in open(rhel_list, 'r'):
@@ -800,7 +833,18 @@ for rhel_entry in open(rhel_list, 'r'):
     entry['erratanumber']=int(erratanumber)
     entry['nvr']=nvr
     entry['state']=state
-    checkins[release]=entry
+    rhel_packages[release]=entry
+
+for fedora_entry in open(fedora_list, 'r'):
+    (release, packages, bugnumber, erratanumber, nvr, state) = fedora_entry.strip().split(':')
+    entry=dict()
+    print('release=',release,'packages=',packages,'bugnumber=',bugnumber,'erratanumber=',erratanumber,'nvr=',nvr,'state=',state)
+    entry['packages']=packages
+    entry['bugnumber']=int(bugnumber)
+    entry['erratanumber']=int(erratanumber)
+    entry['nvr']=nvr
+    entry['state']=state
+    fedora_packages[release]=entry
 
 #######################################################
 #
@@ -808,8 +852,9 @@ for rhel_entry in open(rhel_list, 'r'):
 # level.
 #
 #######################################################
-for release in checkins:
-    entry=checkins[release]
+distro='rhel'
+for release in rhel_packages:
+    entry=rhel_packages[release]
     print("Processing release <%s>:"%release)
     if entry['state'] == 'complete' :
         print("  * complete!")
@@ -887,8 +932,10 @@ for release in checkins:
     print('  * handling errata')
     bug_state=bug_get_state(bugnumber)
     # once the builds are complete, put the bug in modified state
+    bug_resync = False
     if all_builds_pushed and (bug_state == 'NEW' or bug_state == 'ASSIGNED') :
         bug_state = bug_change_state(bugnumber, 'MODIFIED', bugzilla_token)
+        bug_resync = True
     # and once our bug is modified, we can create the errata
     erratanumber = errata_lookup(release, version, firefox_version, packages, bugnumber)
     if erratanumber == 0 and bug_state == 'MODIFIED' :
@@ -901,7 +948,7 @@ for release in checkins:
     if erratanumber != 0 and (bug_state == 'MODIFIED' or bug_state == 'ON_QA') :
         if not errata_has_bug(erratanumber,bugnumber) :
             print("      * adding bug %d to  errata"%bugnumber)
-            errata_add_bug(erratanumber, bugnumber)
+            errata_add_bug(erratanumber, bugnumber, bug_resync)
     if erratanumber != 0 and all_builds_complete :
         entry['state'] = 'need builds attached'
         if  not errata_has_builds(erratanumber, release, builds):
@@ -913,20 +960,91 @@ for release in checkins:
             if  errata_has_bug(erratanumber, bugnumber):
                  entry['state'] = 'complete'
 
-# save the new state
+# fedora doesn't need bugs and errata, just git and builds
+distro='fedora'
+for release in fedora_packages:
+    entry=fedora_packages[release]
+    print("Processing release <%s>:"%release)
+    if entry['state'] == 'complete' :
+        print("  * complete!")
+        continue
+    bugnumber=-1
+    packages=entry['packages']
+    all_builds_pushed=True
+    print("  * checking git tree status")
+    for package in packages.split(',') :
+        # make sure each package is checked in and built
+        git_state = git_get_state(release, package, bugnumber)
+        print("      * package<%s> state=%s"%(package,git_state))
+        if git_state == 'staged' :
+              git_state = git_checkin(release, package, bugnumber)
+        if git_state == 'committed':
+              print('trying to push')
+              git_state = git_push(release, package, bugnumber)
+        if git_state != 'pushed' :
+              all_builds_pushed=False
+        if git_state == 'pushed' and not builds_complete(entry['nvr'],package) :
+              nvr = build(release,package)
+              entry['nvr'] = add_nvr(nvr,entry['nvr'])
+    builds=entry['nvr']
+    erratanumber=entry['erratanumber']
+    all_builds_complete = builds_complete(builds, packages)
+    print("  * setting up state")
+    if not all_builds_pushed :
+        entry['state'] = 'builds need push'
+    elif not all_builds_complete :
+        state = None
+        for package in packages.split(',') :
+            state = merge_state(state, build_status(release,package))
+        if state == "Nobuilds" :
+            entry['state'] = 'builds not started'
+        elif state == "Failed" :
+            entry['state'] = 'builds failed'
+        elif state == "Building" :
+            entry['state'] = 'builds in progress'
+        elif state == "Complete" :
+            entry['state'] = 'builds complete, state error'
+        else :
+            entry['state'] = 'builds in an unknown state'
+    else :
+        entry['state'] = 'complete'
+
+#######################################################
+#
+# Upate in our status files
+#
+#######################################################
 print("Updating %s"%rhel_list)
 f = open(rhel_list,"w")
-for release in checkins :
-    entry = checkins[release]
+for release in rhel_packages :
+    entry = rhel_packages[release]
     bugnumber=entry['bugnumber']
     erratanumber=entry['erratanumber']
     packages=entry['packages']
     f.write("%s:%s:%d:%d:%s:%s\n"%(release,packages,bugnumber,
             erratanumber,entry['nvr'],entry['state']))
 f.close()
+print("Updating %s"%fedora_list)
+f = open(fedora_list,"w")
+for release in fedora_packages :
+    entry = fedora_packages[release]
+    bugnumber=entry['bugnumber']
+    erratanumber=entry['erratanumber']
+    packages=entry['packages']
+    f.write("%s:%s:%d:%d:%s:%s\n"%(release,packages,bugnumber,
+            erratanumber,entry['nvr'],entry['state']))
+f.close()
+
+
+#######################################################
+#
+# print out in our current status
+#
+#######################################################
 print("Current Status:")
-for release in checkins :
-    entry = checkins[release]
+distro='rhel'
+for release in rhel_packages :
+    entry = rhel_packages[release]
     bugnumber=entry['bugnumber']
     erratanumber=entry['erratanumber']
     packages=entry['packages']
@@ -939,3 +1057,13 @@ for release in checkins :
         (task, nvr, state) = build_get_info(release, package)
         if (task != '') :
             print("    %s/taskinfo?taskID=%s (%s,%s)"%(brew_url_base,task,nvr,state))
+
+distro='fedora'
+for release in fedora_packages :
+    entry = fedora_packages[release]
+    packages=entry['packages']
+    print("%s: state='%s'"%(release,entry['state']))
+    for package in packages.split(',') :
+        (task, nvr, state) = build_get_info(release, package)
+        if (task != '') :
+            print("    %s/taskinfo?taskID=%s (%s,%s)"%(koji_url_base,task,nvr,state))
