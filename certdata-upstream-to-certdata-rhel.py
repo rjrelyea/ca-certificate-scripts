@@ -39,7 +39,7 @@ o.add_option('--add-legacy-1024bit', dest="add_legacy_1024bit", action="store_tr
 o.add_option('--add-legacy-codesign', dest="add_legacy_codesign", action="store_true", default=False)
 o.add_option('--without-legacy-choice', dest="with_legacy_choice", action="store_false", default=True)
 o.add_option('--without-ca-policy-attribute', dest="with_ca_policy", action="store_false", default=True)
-o.add_option('--without-disable-after', dest="with_disable_after", action="store_false", default=True)
+o.add_option('--without-distrust-after', dest="with_distrust_after", action="store_false", default=True)
 o.add_option('--input', dest="input", action="store", default="upstream-certdata.txt")
 o.add_option('--output', dest="output", action="store", default="rhel-certdata.txt")
 o.add_option('--legacy-codesign-input', dest="legacy_codesign_input", action="store", default="certdata-2.14-code-signing-trust.txt")
@@ -144,7 +144,7 @@ out = open(options.output, 'w')
 #  and add trust either with always-legacy using standard trust flags,
 #  or configure trust with legacy choice)
 
-in_data, in_multiline, in_obj = False, False, False
+in_data, in_multiline, in_obj, in_multiline_skip = False, False, False, False
 field, type, value, obj = None, None, None, dict()
 in_trust = False
 in_cert = False
@@ -194,7 +194,7 @@ for line in open(options.input, 'r'):
             continue
         if in_multiline :
             obj[field] = value
-        if in_multiline :
+        if in_multiline_skip :
             echo_line = False
         in_multiline = False
         in_multiline_skip = False
@@ -221,6 +221,7 @@ for line in open(options.input, 'r'):
             # everything
             in_multiline_skip = True
             value = ""
+        echo_line = False
         continue
 
     if field == 'CKA_CLASS':
@@ -271,7 +272,7 @@ if echo_line:
 # We do add the ca-policy attribute if necessary.
 # We adjust the trust based on options.with_legacy_choice
 
-in_multiline, in_obj = False, False
+in_multiline, in_obj, in_multiline_skip = False, False, False
 field, type, value, obj = None, None, None, dict()
 in_trust = False
 in_cert = False
