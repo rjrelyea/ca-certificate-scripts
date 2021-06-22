@@ -28,7 +28,7 @@ import getopt
 import requests
 import json
 import git
-from datetime import date
+import datetime
 from requests_kerberos import HTTPKerberosAuth
 
 
@@ -38,6 +38,7 @@ ckbiver_file='./meta/ckbiversion.txt'
 nssver_file='./meta/nssversion.txt'
 firefox_info='./meta/firefox_info.txt'
 config_file='./config.cfg'
+errata_cache_file='./errata_cache'
 errata_url_base='https://errata.devel.redhat.com'
 bugzilla_url_base='https://bugzilla.redhat.com'
 brew_url_base='https://brewweb.engineering.redhat.com/brew'
@@ -47,6 +48,11 @@ bug_summary_short='Annual %s ca-certificates update'
 bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s [%s]'
 bug_description='Update CA certificates to version %s from NSS %s for our annual CA certficate update.'
 distro=None
+
+#
+# define differences between rhel and
+# fedora releases
+#
 packages_dir = {
     "rhel":"./packages/",
     "fedora":"./packages/fedora/"
@@ -60,127 +66,61 @@ package_tool = {
     "fedora":"fedpkg"
 }
 
-z_stream_clone = {
-    "rhel-5.11":False,
-    "rhel-6.10":False,
-    "rhel-7.1":True,
-    "rhel-7.2":True,
-    "rhel-7.3":True,
-    "rhel-7.4":True,
-    "rhel-7.5":True,
-    "rhel-7.6":True,
-    "rhel-7.7":True,
-    "rhel-7.8":True,
-    "rhel-7.9":False,
-    "rhel-8.0.0":True,
-    "rhel-8.1.0":True,
-    "rhel-8.2.0":True,
-    "rhel-8.3.0":True,
-    "rhel-8.4.0":True,
-    "rhel-8.5.0":False
-}
+ga_list = []
+errata_map = {}
 
-bug_version_map = {
-    "rhel-5.11":"5.11",
-    "rhel-6.10":"6.10",
-    "rhel-7.1":"7.1",
-    "rhel-7.2":"7.2",
-    "rhel-7.3":"7.3",
-    "rhel-7.4":"7.4",
-    "rhel-7.5":"7.5",
-    "rhel-7.6":"7.6",
-    "rhel-7.7":"7.7",
-    "rhel-7.8":"7.8",
-    "rhel-7.9":"7.9",
-    "rhel-8.0.0":"8.0",
-    "rhel-8.1.0":"8.1",
-    "rhel-8.2.0":"8.2",
-    "rhel-8.3.0":"8.3",
-    "rhel-8.4.0":"8.4",
-    "rhel-8.5.0":"8.5",
-}
-release_map = {
-    "rhel-5.11":"RHEL-5-ELS-EXTENSION",
-    "rhel-6.10":"RHEL-6-ELS",
-    "rhel-7.1":"RHEL-7.1.EUS",
-    "rhel-7.2":"RHEL-7.2.EUS",
-    "rhel-7.3":"RHEL-7.3.EUS",
-    "rhel-7.4":"RHEL-7.4.EUS",
-    "rhel-7.5":"RHEL-7.5.EUS",
-    "rhel-7.6":"RHEL-7.6.EUS",
-    "rhel-7.7":"RHEL-7.7.EUS",
-    "rhel-7.8":"RHEL-7.8.EUS",
-    "rhel-7.9":"RHEL-7.9.Z",
-    "rhel-8.0.0":"RHEL-8.0.0.Z",
-    "rhel-8.1.0":"RHEL-8.1.0.Z.EUS",
-    "rhel-8.2.0":"RHEL-8.2.0.Z.EUS",
-    "rhel-8.3.0":"RHEL-8.3.0.Z",
-    "rhel-8.4.0":"RHEL-8.4.0.Z.EUS",
-    "rhel-8.5.0":"RHEL-8.5.0.GA"
-}
+#
+# mapping functions to map release
+# to bugzilla strings
+#
+def get_need_zstream_clone(release) :
+    return not release in ga_list
 
-numeric_release_map = {
-    "rhel-5.11":1372,
-    "rhel-6.10":1335,
-    "rhel-7.1":525,
-    "rhel-7.2":0,
-    "rhel-7.3":0,
-    "rhel-7.4":0,
-    "rhel-7.5":0,
-    "rhel-7.6":0,
-    "rhel-7.7":0,
-    "rhel-7.8":0,
-    "rhel-7.9":1292,
-    "rhel-8.0.0":0,
-    "rhel-8.1.0":0,
-    "rhel-8.2.0":1227,
-    "rhel-8.3.0":0,
-    "rhel-8.4.0":1467,
-    "rhel-8.5.0":1398
-}
+def bug_version_map(release):
+    comp=release.split('-')
+    if len(comp) != 2:
+        return "0"
+    version=com[1].split('.')
+    if len(version) < 2 :
+        return "0"
+    return version[0]+"."+version[1]
 
-product_map = {
-    "rhel-5.11":"Red Hat Enterprise Linux 5",
-    "rhel-6.10":"Red Hat Enterprise Linux 6",
-    "rhel-7.1":"Red Hat Enterprise Linux 7",
-    "rhel-7.2":"Red Hat Enterprise Linux 7",
-    "rhel-7.3":"Red Hat Enterprise Linux 7",
-    "rhel-7.4":"Red Hat Enterprise Linux 7",
-    "rhel-7.5":"Red Hat Enterprise Linux 7",
-    "rhel-7.6":"Red Hat Enterprise Linux 7",
-    "rhel-7.7":"Red Hat Enterprise Linux 7",
-    "rhel-7.8":"Red Hat Enterprise Linux 7",
-    "rhel-7.9":"Red Hat Enterprise Linux 7",
-    "rhel-8.0.0":"Red Hat Enterprise Linux 8",
-    "rhel-8.1.0":"Red Hat Enterprise Linux 8",
-    "rhel-8.2.0":"Red Hat Enterprise Linux 8",
-    "rhel-8.3.0":"Red Hat Enterprise Linux 8",
-    "rhel-8.4.0":"Red Hat Enterprise Linux 8",
-    "rhel-8.5.0":"Red Hat Enterprise Linux 8"
-}
+def release_get_major(release):
+    comp=release.split('-')
+    if len(comp) != 2:
+        return None
+    version=comp[1].split('.')
+    if len(version) < 2 :
+        return None
+    return version[0]
 
-release_description_map = {
-    "rhel-5.11":"Red Hat Enterprise Linux 5.11",
-    "rhel-6.10":"Red Hat Enterprise Linux 6.10",
-    "rhel-7.1":"Red Hat Enterprise Linux 7.1 Extended Update Support",
-    "rhel-7.2":"Red Hat Enterprise Linux 7.2 Extended Update Support",
-    "rhel-7.3":"Red Hat Enterprise Linux 7.3 Extended Update Support",
-    "rhel-7.4":"Red Hat Enterprise Linux 7.4 Extended Update Support",
-    "rhel-7.5":"Red Hat Enterprise Linux 7.5 Extended Update Support",
-    "rhel-7.6":"Red Hat Enterprise Linux 7.6 Extended Update Support",
-    "rhel-7.7":"Red Hat Enterprise Linux 7.7 Extended Update Support",
-    "rhel-7.8":"Red Hat Enterprise Linux 7.8 Extended Update Support",
-    "rhel-7.9":"Red Hat Enterprise Linux 7.9",
-    "rhel-8.0.0":"Red Hat Enterprise Linux 8.0.0",
-    "rhel-8.1.0":"Red Hat Enterprise Linux 8.1.0 Extended Update Support",
-    "rhel-8.2.0":"Red Hat Enterprise Linux 8.2.0 Extended Update Support",
-    "rhel-8.3.0":"Red Hat Enterprise Linux 8.3.0",
-    "rhel-8.4.0":"Red Hat Enterprise Linux 8.4.0 Extended Update Support",
-    "rhel-8.5.0":"Red Hat Enterprise Linux 8"
-}
+def product_map(release):
+    major = release_get_major(release)
+    if (major == None) :
+        return "Unkown product"
+    return "Red Hat Enterprise Linux "+major
 
 def map_zstream_release(release):
     return release.replace('rhel-','')
+
+#
+# mapping functions to map release
+# to errata strings
+#
+def release_map(release) :
+    if not release in errata_map:
+       return None
+    return errata_map[release]['name']
+
+def numeric_release_map(release) :
+    if not release in errata_map:
+       return 0
+    return errata_map[release]['id']
+
+def release_description_map(release):
+    if not release in errata_map:
+       return None
+    return errata_map[release]['description']
 
 package_description_map= {
     "ca-certificates":"The ca-certificates package contains a set of Certificate Authority (CA) certificates chosen by the Mozilla Foundation for use with the Internet Public Key Infrastructure (PKI).",
@@ -202,6 +142,55 @@ synopsis="%s bug fix and enhancement update"
 topic_base="An update for %s %s now available for %s."
 checkin_log="checkin.log"
 
+# even though this isn't a conversion, it's more convenient to
+# use this function than to try to default almost identical
+# code for each of these operators
+def cmp_to_key(mycmp):
+    'Convert a cmp= function into a key= function'
+    class K:
+        def __init__(self, obj, *args):
+            self.obj = obj
+        def __lt__(self, other):
+            return mycmp(self.obj, other.obj) < 0
+        def __gt__(self, other):
+            return mycmp(self.obj, other.obj) > 0
+        def __eq__(self, other):
+            return mycmp(self.obj, other.obj) == 0
+        def __le__(self, other):
+            return mycmp(self.obj, other.obj) <= 0
+        def __ge__(self, other):
+            return mycmp(self.obj, other.obj) >= 0
+        def __ne__(self, other):
+            return mycmp(self.obj, other.obj) != 0
+    return K
+
+def splitnumeric(string) :
+    numeric=''
+    pos=len(string)
+    for i in range(0,pos-1) :
+        if not string[i].isnumeric() :
+            pos=i
+            break;
+        numeric = numeric + string[i]
+    return (numeric, string[pos:])
+
+def get_ga_list() :
+    l_ga_list = []
+    last_ga = None
+    last_major = 0
+    # errata_map is stored in release order already
+    for release in errata_map.keys() :
+        current_major = release_get_major(release)
+        if last_major != current_major :
+            if last_ga != None :
+                l_ga_list.append(last_ga)
+            last_major = current_major
+            last_ga=release
+    if (last_ga != None) :
+        l_ga_list.append(last_ga)
+    return l_ga_list
+
+
 #
 #    Bugzilla helper function
 #
@@ -209,9 +198,9 @@ checkin_log="checkin.log"
 def bug_create(release,version,nss_version,firefox_version,packages,token) :
     packages_list=packages.split(',')
     bug = {}
-    bug['product'] = product_map[release]
+    bug['product'] = product_map(release)
     bug['component'] = packages_list[0]
-    bug['version'] = bug_version_map[release]
+    bug['version'] = bug_version_map(release)
     bug['summary'] = bug_summary%(year,version,nss_version,firefox_version,release)
     bug['description'] = bug_description%(version,nss_version)
     bug['priority'] = 'low'
@@ -223,13 +212,12 @@ def bug_create(release,version,nss_version,firefox_version,packages,token) :
     if token != None :
         url = url + '?' + token
 
-    print(">>>would create bug with %s and"%url,bug)
-    #r = requests.post(url, headers=headers, json=bug,
-    #                 verify=ca_certs_file)
-    #if r.status_code <= 299 :
-    #    return int(r.json()['id'])
-    #print('bug create status=%d'%r.status_code)
-    #print('returned text=',r.text)
+    r = requests.post(url, headers=headers, json=bug,
+                     verify=ca_certs_file)
+    if r.status_code <= 299 :
+        return int(r.json()['id'])
+    print('bug create status=%d'%r.status_code)
+    print('returned text=',r.text)
     return 0
 
 # look up a bug based on the description. this is to find cloned z-stream bugs
@@ -245,11 +233,11 @@ def bug_lookup(release, version, firefox_version, packages, token, zstream):
            login=token + '&'
            last=''
         url=bugzilla_url_base+"/rest/bug?%sproduct=%s&component=%s&status=NEW&status=ASSIGNED&status=MODIFIED&status=ON_QA&cf_zstream_target_release=%s&cf_internal_target_release=---&limit=1&summary=%s%s"%(login,
-            product_map[release], packages_list[0],
+            product_map(release), packages_list[0],
             map_zstream_release(release), summary, last)
     else:
-        url=bugzilla_url_base+"/rest/bug?product=%s&component=%s&version=%s&status=NEW&status=ASSIGNED&status=MODIFIED&status=ON_QA&limit=1&summary=%s"%(product_map[release],
-             packages_list[0],bug_version_map[release],summary)
+        url=bugzilla_url_base+"/rest/bug?product=%s&component=%s&version=%s&status=NEW&status=ASSIGNED&status=MODIFIED&status=ON_QA&limit=1&summary=%s"%(product_map(release),
+             packages_list[0],bug_version_map(release),summary)
     r = requests.get(url, headers=headers, verify=ca_certs_file)
     if r.status_code <= 299 :
         bugs = r.json()['bugs']
@@ -335,8 +323,11 @@ def bug_change_state(bugnumber, state, token):
 #
 # create a new errata and attack the bug returns the errata number
 def errata_create(release, version, firefox_version, packages, year, bugnumber) :
-    release_name=release_map[release]
-    release_description=release_description_map[release]
+    release_name=release_map(release)
+    if release_name == None :
+        print("Can'd find product version for release %s, skipping errata create"%release)
+        return 0
+    release_description=release_description_map(release)
     advisory= dict()
     packages_list=packages.split(',')
     # handle signular and plural verbs, adjust the packages to english
@@ -350,7 +341,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     #build the description
     description=''
     for package in packages_list :
-       description=description+package_description[package]+'\n\n'
+       description=description+package_description_map[package]+'\n\n'
     description=description+description_base%(release_name,year,version,firefox_version)
     #now build the advisory
     advisory['errata_type']='RHBA'
@@ -367,23 +358,52 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     errata['release']=release_name
     errata['advisory']=advisory
     print("----------Creating errrata for "+release.strip())
-    print(">>>would create errrata with %s and"%url,errata)
-    #headers= { 'Content-type':'application/json', 'Accept':'application/json' }
-    #url=errata_url_base+'/api/v1/erratum'
-    #print('url='+url)
-    #r = requests.post(url, headers=headers, json=errata,
-    #                 auth=HTTPKerberosAuth(),
-    #                 verify=ca_certs_file)
-    #if r.status_code <= 299 :
-    #    return r.json()['id']
-    #print('errata create status=%d'%r.status_code)
-    #print('returned text=',r.text)
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    url=errata_url_base+'/api/v1/erratum'
+    r = requests.post(url, headers=headers, json=errata,
+                     auth=HTTPKerberosAuth(),
+                     verify=ca_certs_file)
+    if r.status_code <= 299 :
+        return r.json()['id']
+    print('errata create status=%d'%r.status_code)
+    print('returned text=',r.text)
     return 0
+
+def errata_get_all_pages(url,paste,request_type) :
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    r = requests.get(url, headers=headers,
+                     auth=HTTPKerberosAuth(),
+                     verify=ca_certs_file)
+    if r.status_code > 299 :
+        print('errata %s status=%d'%(request_type,r.status_code))
+        print('text=',r.text)
+        return None
+    data = r.json()['data']
+    print("page 1 found")
+    if 'page' in r.json() :
+        page=r.json()['page']
+        print("page=",page)
+        num_pages=page['total_pages']
+        print("num_pages =", num_pages)
+        if num_pages != 1 :
+            for i in range(2,num_pages+1) :
+                print("page",i)
+                url_page="%s%spage[number]=%d"%(url,paste,i)
+                r = requests.get(url_page, headers=headers,
+                                 auth=HTTPKerberosAuth(),
+                                 verify=ca_certs_file)
+                if r.status_code > 299 :
+                    print('errata %s page %d status=%d'%(request_type, i, r.status_code))
+                    print('text=',r.text)
+                    return None
+                print("page %d found"%i)
+                data=data+r.json()['data']
+    return data
 
 def errata_lookup(release, version, firefox_version, packages, bugnumber) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     packages_list=packages.split(',')
-    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[]=%d&synopsis_text=%s"%(numeric_release_map[release],packages_list[0])
+    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[]=%d&synopsis_text=%s"%(numeric_release_map(release),packages_list[0])
     url=errata_url_base + search_params
     r = requests.get(url, headers=headers,
                      auth=HTTPKerberosAuth(),
@@ -434,7 +454,7 @@ def errata_get_builds(errata, release) :
     if len(r.json()) == 0 :
         return []
     builds = []
-    for builditem in r.json()[release_map[release]]['builds'] :
+    for builditem in r.json()[release_map(release)]['builds'] :
         builds +=  list(builditem.keys())
     return builds
 
@@ -494,7 +514,7 @@ def errata_add_builds(errata, release, builds) :
     for build in builds.split(',') :
         if not build in nvr :
             entry = dict()
-            entry['product_version']=release_map[release]
+            entry['product_version']=release_map(release)
             entry['build']=build
             request.append(entry)
     # if they are all already added, don't send an empty request
@@ -510,6 +530,166 @@ def errata_add_builds(errata, release, builds) :
     print('errata add builds status=%d'%r.status_code)
     print('text=',r.text)
     return
+
+def errata_candidate_to_release(brew_tag) :
+    lists = brew_tag.split('-')
+    if len(lists) < 1:
+        return 'empty'
+    rhel_type=lists[0].lower()
+    if len(lists) < 2:
+        return rhel_type
+    return "%s-%s"%(rhel_type,lists[1])
+
+def errata_nvrcmp(rel1,rel2) :
+    comp1 = rel1.split('-')
+    comp2 = rel2.split('-')
+    # handle the empty string cases
+    if len(comp1) == 0 :
+        if (len(comp2) == 0) :
+            return 0
+        return -1
+    if len(comp2) == 0 :
+        return 1
+    # handle the product differences
+    if (comp1[0] < comp2[0]) :
+       return -1
+    if (comp1[0] > comp2[0]) :
+       return 1
+    if len(comp1) == 1 :
+        if len(comp2) == 1 :
+            return 0
+        return -1
+    if len(comp2) == 1 :
+        return 1
+    # treat the version as numeric values
+    ver1 = comp1[1].split('.')
+    ver2 = comp2[1].split('.')
+    for i in range(0,min(len(ver1),len(ver2))) :
+        if ver1[i] == ver2[i] :
+            continue
+        if not ver1[i].isnumeric() or not ver2[i].isnumeric():
+            (v1n, v1rest) = splitnumeric(ver1[i])
+            (v2n, v2rest) = splitnumeric(ver2[i])
+            if (v1n < v2n) :
+                return -1
+            if (v1n > v2n) :
+                return 1
+            if (v1rest < v2rest) :
+                return -1
+            return 1
+        if (int(ver1[i]) < int(ver2[i])) :
+           return -1
+        return 1
+    if len(ver1) < len(ver2) :
+        return -1
+    if len(ver1) > len(ver2) :
+        return 1
+    # now parse the rest
+    if len(comp1) == 2 :
+        if len(comp2) == 2 :
+            return 0
+        return -1
+    if len(comp2) == 2 :
+        return 1
+    for i in range(0,min(len(comp1),len(comp2))) :
+        if comp1[i] < comp2[i] :
+           return -1
+        if comp2[i] > comp2[i] :
+           return 1
+    if len(cmp1) < len(cmp2) :
+        return -1
+    if len(cmp1) > len(cmp2) :
+        return 1
+
+def errata_get_version_order(version) :
+    if version.endswith(".EUS") :
+        return 10
+    if version.endswith("-EUS") :
+        return 9
+    if version.endswith(".Z") :
+        return 8
+    if version.endswith(".AUS") :
+        return 7
+    if version.endswith("-AUS") :
+        return 6
+    if version.endswith(".TUS") :
+        return 5
+    if version.endswith("-TUS") :
+        return 4
+    if version.endswith(".E4S") :
+        return 3
+    if version.endswith("-E4S") :
+        return 2
+    return 0
+
+def errata_is_better(best, compare, isga) :
+    if best == None :
+        return True
+    bestname=best['name']
+    if bestname.endswith(".GA") :
+        return  not isga
+    comparename=compare['name']
+    if comparename.endswith(".GA") :
+        return isga
+    if bestname.endswith(".MAIN+EUS") :
+        return False
+    if comparename.endswith(".MAIN+EUS") :
+        return True
+    return errata_get_version_order(bestname) < errata_get_version_order(comparename)
+
+def errata_get_best_version(version_list, isga) :
+    best=None
+    for version in version_list :
+        if errata_is_better(best,version,isga) :
+            best = version
+    return best
+
+def errata_get_release_info() :
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    params="/api/v1/products/16/product_versions"
+    url=errata_url_base + params
+    data = errata_get_all_pages(url,"?","release_info")
+    if data == None :
+        return 0
+    product_version_list = dict()
+    out_of_life_list = dict()
+    maps = dict()
+    releases = list()
+    for product_version in data:
+        product_version_info = dict()
+        attributes = product_version['attributes']
+        product_version_info['name'] = attributes['name']
+        product_version_info['description'] = attributes['description']
+        product_version_info['id'] = product_version['id']
+        brew = attributes['default_brew_tag']
+        release = errata_candidate_to_release(brew)
+        if not release in releases :
+                print("adding release= %s"%release)
+                releases.append(release)
+        if attributes['enabled'] :
+            if not release in product_version_list :
+                product_version_list[release] = []
+            product_version_list[release].append(product_version_info)
+        else :
+            if not release in out_of_life_list :
+                out_of_life_list[release] = []
+            out_of_life_list[release].append(product_version_info)
+    ga=None
+    print("releases =",releases)
+    sorted_releases = sorted(releases,key=cmp_to_key(errata_nvrcmp))
+    print("sorted_releases =",sorted_releases)
+    for release in sorted_releases :
+        if release in product_version_list :
+            for pv in product_version_list[release] :
+                if pv['name'].endswith('.GA') :
+                    ga=release
+    for release in sorted_releases :
+        if release in product_version_list :
+            maps[release] = errata_get_best_version(
+                        product_version_list[release], release == ga)
+            print('release=',release,'map=',maps[release])
+    return maps
+
 
 #
 #    git helper functions
@@ -674,7 +854,7 @@ def build_nvr(release,package):
         build_nvr.cache[release]= {}
     if package in build_nvr.cache[release] :
         return build_nvr.cache[release][package]
-    
+
     pushd=os.getcwd()
     os.chdir(packagedir)
 
@@ -737,13 +917,14 @@ def build(release,package):
 #
 #######################################################
 try:
-    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:",)
+    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:",["resync","get-ga"])
 except getopt.GetoptError as err:
     print(err)
     print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-b bugzillaurlbase]')
     sys.exit(2)
 
-
+resync=False
+get_ga=False
 f = open(ckbiver_file, "r")
 version=f.read().strip()
 f.close()
@@ -759,7 +940,7 @@ try:
 except :
     print("No firefox_info file ("+firefox_info+") be sure to include -f option to specify the related firefox version on first call")
 
-year=date.today().strftime("%Y")
+year=datetime.date.today().strftime("%Y")
 
 for config in open(config_file, 'r'):
     ( key, value) = config.strip().split(':',2)
@@ -799,6 +980,10 @@ for opt, arg in opts:
         errata_url_base = arg
     elif opt == '-b' :
         bugzilla_url_base = arg
+    elif opt == '--resync' :
+        resync = True
+    elif opt == '--get-ga' :
+        get_ga = True
 
 qe_line=''
 if  qe != None :
@@ -815,6 +1000,43 @@ if not os.path.exists(firefox_info) :
 
 if bugzilla_login != None :
     bugzilla_token=bug_login(bugzilla_login,bugzilla_password)
+
+#
+# initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to
+# various values and descriptions used by the errata system. We query
+# the errata system to find those mapping, then we cache them in
+# the errata_cache_file. From then on we just use the cache unless
+# the cache time is too old, or the user has requested a resync
+#
+if not resync :
+    try:
+        f = open(errata_cache_file, "r")
+        valid = datetime.datetime.strptime(f.readline().strip(),"%Y-%m-%d")
+        print(valid)
+        delta = datetime.date.today()-valid.date()
+        if delta > datetime.timedelta(days=30) :
+            resync=True
+        else :
+            errata_map = json.loads(f.read())
+        f.close()
+    except:
+        resync=False
+
+if resync :
+    errata_map = errata_get_release_info()
+    f=open(errata_cache_file, "w")
+    f.write(datetime.date.today().strftime("%Y-%m-%d")+"\n")
+    f.write(json.dumps(errata_map,indent=1))
+    f.close()
+
+# we have the errata_map now , we can get the ga_list
+ga_list = get_ga_list()
+
+if get_ga :
+    for i in ga_list :
+        print(i,end=' ')
+    print('')
+    sys.exit(0)
 
 rhel_packages = {}
 fedora_packages = {}
@@ -865,7 +1087,7 @@ for release in rhel_packages:
     print("  * handling bugs")
     if bugnumber == 0 :
         # we need bug numbers so that we can commit our changes
-        if z_stream_clone[release] :
+        if get_need_zstream_clone(release) :
             # lookup cloned bug number
             bugnumber=bug_lookup(release,version,firefox_version,packages,bugzilla_token,True)
             if bugnumber == 0 :
