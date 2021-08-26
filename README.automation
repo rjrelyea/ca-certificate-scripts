@@ -1,4 +1,4 @@
-Ca-certificates automation, updated June 15, 2021
+Ca-certificates automation, updated Aug 26, 2021
 
 For the theory of ca-certificates update, see README.md.
 
@@ -31,6 +31,10 @@ Which takes a list of options as well as various releases you want to release:
   - creates a file meta/rhel_list and meta/fedora_list which includes the
     current releases and builds
 
+Example of typical use:
+   # pull and build the latest on fedora, rhel5, rhel6 rhel7 and rhel8
+   ./build_combo.sh f43 f44 rawhide rhel-5.10 rhel-6.10 rhel-7.9 rhel-8.3.0 rhel-8.4.0 rhel-8.5.0 rhel-8.6.0
+
 ./process.py
 which takes the following options   
     ./process.py [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase]')
@@ -47,10 +51,10 @@ which takes the following options
 ./process.py operation
     process.py tries to do as much as possible in completing the tasks needed
     for release.
-    -it looks up bugs, and if they don't exists creates time (exception: 
+    -it looks up bugs, and if they don't exists creates them (exception: 
      z-stream bugs are created by the system once the y-stream bug has moved
-     to MODIFIED). ./process.py knows this and only tries to look up the 
-     z-stream bugs.
+     to MODIFIED ./process.py knows this and only tries to look up the 
+     z-stream bugs).
     - once bugs are created, the changes in the tree are committed with
       the bug number.
     - if the bugs have the appropriate acks, the changes are pushed to git.
@@ -71,19 +75,22 @@ following:
     bugzilla_login:{bugzilla login}
     bugzilla_password:{bugzilla password}
 
-A sample config.cfg.sample is includes. config.cfg is in .gitignore to prevent
+A sample config.cfg.sample is included. config.cfg is in .gitignore to prevent
 pushing your private password to the public repository.
 
 If you don't include a bugzilla login/password, ./process.py may not be able
 find z-stream bugs, as well as create or modify bugs.
-If you don't supply (manager, owner, or qe), ./process.py will not be able to
+If you don't supply manager, owner, or qe, ./process.py will not be able to
 create erratas.
 
 On your first invocation of ./process.py, you need to specify a firefox
 release. ./process.py will remember that release on later calls.
 You will also make sure you have kerberos tokens or most operation will fail.
 
-The intension is ./process.py is ran periodically, it stops when blocked. 
+Example:
+./process -f 91
+
+The intension is ./process.py is run periodically, it stops when blocked. 
 The tool outputs the final state, which indicates what needs to be done to 
 move forward:
     state               meaning               action to move forward
@@ -96,6 +103,9 @@ move forward:
                       y-stream and       * verify bugzilla config
                       create failed      * hand create bug with the subject
                                          'Annual {year} ca-certificates update'
+                                         * If bug exists, you can hand add the
+                                         bug number to ./meta/rhel_list or 
+                                         ./meta/fedora_list
 
  bug needs ack        bugs don't have    get the required acks
                       the requires acks
@@ -104,20 +114,24 @@ move forward:
  patch need push      patch is checked   git push probably failed, could be:
                       in to git, but     * authentication failure
                       push failed        * additional bug flags that are
-                                          missing.
-                                          running 'rhpkg push' by hand will
-                                           usually give the reason
- builds not started   for some reason    rerun ./process.py. if problem
+                                         missing.
+                                         * running 'rhpkg push' by hand in
+                                         the appropriate ./packages
+                                         subdirectory will usually give the 
+                                         reason
+
+ builds not started   for some reason    * rerun ./process.py. if problem
                       builds are pushed, persists, try running 'rhpkg build'
-                      but the builds     by hand
-                      weren't started
+                      but the builds     by hand in the appropriate
+                      weren't started    ./packages subdirectory.
 
- builds failed        builds failed       check brew for the issue and correct
+ builds failed        builds failed       * check brew for the issue and 
+                                          correct
 
- builds in progress   brew is currently   wait for builds to complete
+ builds in progress   brew is currently   * wait for builds to complete
                       running builds
 
- builds in gating     gating is running   check brew for the gating status
+ builds in gating     gating is running   * check brew for the gating status
                       on the build, or    if gating failed, diagnose gating
                       gating has failed   error and fix
 
@@ -129,21 +143,23 @@ move forward:
  need builds attached builds complete,    * make sure config.cfg is correct
                       but not attached to * make sure you have valid kerberos
                       errata              tickets
-                                          * hand add builds
+                                          * hand add builds to errata
 
  needs bugs attached  bugs in modified    * make sure config.cfg is correct
                       but not attached    * make sure you have valid kerberos
                       to errata           tickets
-                                          * hand add builds
+                                          * hand add bugs to errata
+
  complete             Builds are complete
                       and attached to
                       errata, bugs are
                       attached to errata
+
 The following states are error states in ./process.py and indicate a
 programming error or difficency in ./process.py:
 
-builds complete, state error - should not happen (problem with ./process.py)
-builds in an unknown state - should not happen (problem with ./process.py)
+ builds complete, state error - should not happen (problem with ./process.py)
+ builds in an unknown state - should not happen (problem with ./process.py)
 
 You can complete any steps you want by hand and ./process.py will automatically
 recognize that step (checkin, pushing, building, errata and bug creation, etc).
@@ -152,6 +168,12 @@ recognize that step (checkin, pushing, building, errata and bug creation, etc).
 to:
    1) force a refresh (set bug and errata numbers to 0 will force a new lookup)
    1) force a particular bug or errata number
-   2) removed packages
+   2) remove packages
    3) force a complete refresh (bug, errata=0 nvr='' state=stale)
 each run everything is refreshed except bug and errata numbers, and state=complete
+
+./meta/fedora.list includes the current state for fedora. Fedora does not
+require acks on the bugs, do anything with errata. Fedora updates currently
+need to be manually involked.
+
+

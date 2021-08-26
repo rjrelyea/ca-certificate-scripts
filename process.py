@@ -262,7 +262,7 @@ def bug_login(login, password):
     return None
 
 # check if the bug has all it's required acks for checkin
-def bug_is_acked(bugnumber, token) :
+def bug_is_acked(bugnumber, name, token) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=bugzilla_url_base+"/rest/bug/%d"%bugnumber
     if token != None :
@@ -280,13 +280,33 @@ def bug_is_acked(bugnumber, token) :
         return False
     for flag in bugs[0]['flags'] :
         if flag['status'] == '+' :
-            if flag['name'] == 'release' :
+            if flag['name'] == name :
                 return True
-            if flag['name'] == 'rhel-7.9.z' :
-                return True
-            if flag['name'] == 'rhel-6-els' :
-                return True
+            if name == 'release' :
+                if flag['name'] == 'rhel-7.9.z' :
+                    return True
+                if flag['name'] == 'rhel-6-els' :
+                    return True
     return False
+
+def bug_set_flag(bugnumber, name, status, token):
+    flags={}
+    flags['name'] = name
+    flags['status'] = status
+    bug = {}
+    bug['flags'] = flags
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    url=bugzilla_url_base+"/rest/bug/%d"%bugnumber
+    if token != None :
+        url = url + '?' + token
+
+    r = requests.put(url, headers=headers, json=bug,
+                     verify=ca_certs_file)
+    if r.status_code <= 299 :
+        return
+    print('bug set flag status=%d'%r.status_code)
+    print('returned text=',r.text)
+    return
 
 def bug_get_state(bugnumber) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
@@ -403,8 +423,9 @@ def errata_get_all_pages(url,paste,request_type) :
 def errata_lookup(release, version, firefox_version, packages, bugnumber) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     packages_list=packages.split(',')
-    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[]=%d&synopsis_text=%s"%(numeric_release_map(release),packages_list[0])
+    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[name]=%s&synopsis_text=%s"%(release_map(release),packages_list[0])
     url=errata_url_base + search_params
+    print('errata lookup url = ',url)
     r = requests.get(url, headers=headers,
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
@@ -414,7 +435,7 @@ def errata_lookup(release, version, firefox_version, packages, bugnumber) :
         return 0
     data=r.json()['data']
     if len(data) == 0 :
-        print("errata for %s %s not found"%(release,packages_list[0]))
+        print("errata for %s (%d) %s not found"%(release,numeric_release_map(release),packages_list[0]))
         return 0
     return int(data[0]['id'])
 
@@ -691,6 +712,54 @@ def errata_get_release_info() :
     return maps
 
 
+def errata_merge_rpm_status(status, status2) :
+    # first, state of PASSED has lowest priority
+    # STATUSs are PASSED, WAIVED, INFO, FAILED, RUNING, PENDING
+    # in reverse order of precidence
+    if status == 'PASSED':
+        return status2
+    if state2 == 'PASSED':
+        return status
+    # if they are equal, return them
+    if status == status2 :
+        return state
+    # 'Pending' has the highest precidence
+    if status == 'PENDING' or status == 'PENDING' :
+        return 'PENDING'
+    # 'Running' has the highest precidence
+    if status == 'RUNNING' or status == 'RUNNING' :
+        return 'RUNNING'
+    # 'Failed' is next
+    if status == 'FAILED' or status == 'FAILED' :
+        return 'FAILED'
+    # now we know that 1) state != state2, and neither
+    # is equal to 'Passed', 'Pending', 'Running' or 'Failed'
+    # One must be 'Info' and the other 'Waived', 'Info'
+    # has precidence
+    return 'INFO'
+
+def errata_get_rpm_state(erratanumber, builds) :
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    params="/api/v1/external_tests?filter[errata_id]=%d&filter[test_type]=rpmdiff"%erratanumber
+    url=errata_url_base + params
+    data = errata_get_all_pages(url,"&","get rpm state")
+    if data == None :
+        return "PASSED"
+    current_status = "PASSED"
+    for rpmdiff in data :
+        relationships = rpmdiff['relationships']
+        if relationships['brew_build']['nvr'] in builds :
+            status = rpmdiff['status']
+            if 'superseded_by' in relationships:
+                status = relationships['status']
+            current_status = errata_merge_status(status, current_status)
+    return current_status
+    
+def errata_get_state(erratanumber) :
+    return 'QE'
+
+def errata_set_state(erratanumber,newstate) :
+    return 'QE';
 #
 #    git helper functions
 #
@@ -1116,7 +1185,7 @@ for release in rhel_packages:
         print("      * package<%s> state=%s"%(package,git_state))
         if git_state == 'staged' :
               git_state = git_checkin(release, package, bugnumber)
-        if git_state == 'committed' and bug_is_acked(bugnumber,bugzilla_token) :
+        if git_state == 'committed' and bug_is_acked(bugnumber,'release',bugzilla_token) :
               print('trying to push')
               git_state = git_push(release, package, bugnumber)
         if git_state != 'pushed' :
@@ -1129,7 +1198,7 @@ for release in rhel_packages:
     all_builds_complete = builds_complete(builds, packages)
     print("  * setting up state")
     # update our state
-    if not bug_is_acked(bugnumber,bugzilla_token):
+    if not bug_is_acked(bugnumber,'release', bugzilla_token):
         entry['state'] = 'bug needs ack'
     elif not all_builds_pushed :
         entry['state'] = 'builds need push'
@@ -1155,6 +1224,10 @@ for release in rhel_packages:
     bug_state=bug_get_state(bugnumber)
     # once the builds are complete, put the bug in modified state
     bug_resync = False
+    if bug_state == 'NEW' :
+        bug_state = bug_change_state(bugnumber, 'ASSIGNED', bugzilla_token)
+    if not bug_is_acked(bugnumber,'devel_ack',bugzilla_token) :
+        bug_state = bug_set_flag(bugnumber, 'devel_ack', '+', bugzilla_token)
     if all_builds_pushed and (bug_state == 'NEW' or bug_state == 'ASSIGNED') :
         bug_state = bug_change_state(bugnumber, 'MODIFIED', bugzilla_token)
         bug_resync = True
@@ -1180,7 +1253,15 @@ for release in rhel_packages:
         if errata_has_builds(erratanumber, release, builds):
             entry['state'] = "needs bugs attached"
             if  errata_has_bug(erratanumber, bugnumber):
-                 entry['state'] = 'complete'
+                 rpm_state = errata_get_rpm_state(erratanumber, entry['nvr'])
+                 entry['state'] = 'rpm diff state ' + rpm_state
+                 if (rpm_state == 'PASSED' or rpm_state == 'WAIVED') :
+                     entry['state'] = 'need to set to QE'
+                     errata_state = errata_get_state(erratanumber)
+                     if (errata_state != 'QE') :
+                         errata_state = errata_set_state(erratanumber,"QE")
+                     if (errata_state == 'QE') :
+                         entry['state'] = 'complete'
 
 # fedora doesn't need bugs and errata, just git and builds
 distro='fedora'
