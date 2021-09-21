@@ -17,6 +17,7 @@ release_type="RTM"
 release="3_67"
 verbose=1
 CURRENT_RELEASES="rawhide $(./process.py --get-ga)"
+CENTOS_CACERTS_FORK=$(./process.py --getconfig centos_fork)
 RHEL_NSS=0
 RHEL_OPENSSL=0
 RHEL_CACERTS=0
@@ -452,6 +453,7 @@ while [ -n "$1" ]; do
      f*|rawhide)
             FEDORA="${FEDORA} $1"; FEDORA_CACERTS=1;;
     *)
+        echo "unknown command $1"
         echo "usage: $0 [-r] [-t nss_type] [-n nss_release] [-f] rhel_releases"
         echo "-d               use the development tip rather than the latest release"
         echo "-n nss_release   fetch a specific nss release (default latest)"
@@ -484,6 +486,8 @@ if [ -n "${RHEL8}" ]; then
 fi
 if [ -n "${RHEL9}" ]; then
     mkdir -p ${MODIFIED}/rhel9/ca-certificates
+    mkdir -p ${PACKAGES}/centos
+    mkdir -p ${PACKAGES}/centos-fork
 fi
 if [ -n "${RHEL6}" ]; then
     mkdir -p ${MODIFIED}/rhel6_10/ca-certificates
@@ -574,6 +578,32 @@ cd ${PACKAGES}
 if [ ${RHEL_CACERTS} -eq 1 ]; then
     echo ">> fetching rhel ca-certificates"
     rhpkg -q clone -B ca-certificates
+    if [ -n "${RHEL9}" ]; then
+        # RHEL-9 tip needs to be checked into centos stream c9s, which uses
+        # pull requests from the for.
+        echo ">> fetching centos ca-certificates"
+        # first fetch the centos stream directory
+        cd centos 
+        echo centpkg clone -a rpms/ca-certificates
+        centpkg clone -a rpms/ca-certificates
+        cd ca-certificates
+        # save the URL
+        CA_UPSTREAM=$(git config --get remote.origin.url)
+        # now fetch the fork
+        cd ${PACKAGES}/centos-fork
+        echo "Cloning fork, CA_UPSTREAM=${CA_UPSTREAM} CENTOS_CACERTS_FORK=${CENTOS_CACERTS_FORK}"
+        git clone ${CENTOS_CACERTS_FORK}
+        cd ca-certificates
+        # make sure the fork is up to date
+        git remote add upstream ${CA_UPSTREAM}
+        git checkout c9s
+        git fetch upstream
+        git pull  upstream c9s
+        git push origin c9s
+        # create the branch for the pull request
+        git checkout -b ca-certificates-update-${ckbi_version} origin/c9s
+        cd ${PACKAGES}
+    fi
 fi
 if [ ${RHEL_NSS} -eq 1 ]; then
     echo ">> fetching rhel nss"
@@ -584,9 +614,8 @@ if [ ${RHEL_OPENSSL} -eq 1 ]; then
     rhpkg -q clone -B openssl
 fi
 if [ ${FEDORA_CACERTS} -eq 1 ]; then
-    cd fedora
     echo ">> fetching fedora ca-certificates"
-    fedpkg -q clone -B ca-certificates
+    (cd fedora; fedpkg -q clone -B ca-certificates)
 fi
 
 
@@ -683,7 +712,12 @@ done
 for i in ${RHEL9}
 do
    echo "********************** ca-certificates $i *************************"
-   cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
+   if  echo ${CURRENT_RELEASES} | grep $i ; then
+      cacertificates_update ${PACKAGES}/centos-fork/ca-certificates ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
+   else
+      echo "CURRENT_RELEASES=\"${CURRENT_RELEASES}\" THIS_RELEASE=$i"
+      cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel9/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "90.0" "91"
+   fi
    errors=$(expr $errors + $?)
    echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
 done

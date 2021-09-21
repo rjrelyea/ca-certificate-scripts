@@ -38,6 +38,7 @@ ckbiver_file='./meta/ckbiversion.txt'
 nssver_file='./meta/nssversion.txt'
 firefox_info='./meta/firefox_info.txt'
 config_file='./config.cfg'
+release_id_file='./release_id'
 errata_cache_file='./errata_cache'
 errata_url_base='https://errata.devel.redhat.com'
 bugzilla_url_base='https://bugzilla.redhat.com'
@@ -55,20 +56,35 @@ distro=None
 #
 packages_dir = {
     "rhel":"./packages/",
-    "fedora":"./packages/fedora/"
+    "fedora":"./packages/fedora/",
+    "centos":"./packages/centos"
 }
 build_info_tool = {
     "rhel":"brew",
-    "fedora":"koji"
+    "fedora":"koji",
+    "centos":"koji -p stream"
 }
 package_tool = {
     "rhel":"rhpkg",
-    "fedora":"fedpkg"
+    "fedora":"fedpkg",
+    "centos":"centpkg"
 }
 
 ga_list = []
 errata_map = {}
+release_id_map = {}
+config = {}
 
+# handle package location differences for rhel9 centos stream
+def get_git_packages_dir(distro,package,release) :
+    if distro == 'centos' :
+        return packages_dir[distro]+"-fork/%s"%package;
+    return packages_dir[distro]+"%s/%s"%(package,release)
+
+def get_build_packages_dir(distro,package,release) :
+    if distro == 'centos' :
+        return packages_dir[distro]+"/%s"%package;
+    return packages_dir[distro]+"%s/%s"%(package,release)
 #
 # mapping functions to map release
 # to bugzilla strings
@@ -80,7 +96,7 @@ def bug_version_map(release):
     comp=release.split('-')
     if len(comp) != 2:
         return "0"
-    version=com[1].split('.')
+    version=comp[1].split('.')
     if len(version) < 2 :
         return "0"
     return version[0]+"."+version[1]
@@ -93,6 +109,19 @@ def release_get_major(release):
     if len(version) < 2 :
         return None
     return version[0]
+
+def safe_int(a) :
+    try:
+       b =  int(a)
+    except ValueError :
+       b = 0;
+    return b
+
+def release_is_centos_stream(release) :
+    if safe_int(release_get_major(release)) < 9 :
+       return False
+    return not get_need_zstream_clone(release)
+
 
 def product_map(release):
     major = release_get_major(release)
@@ -117,10 +146,19 @@ def numeric_release_map(release) :
        return 0
     return errata_map[release]['id']
 
+
 def release_description_map(release):
     if not release in errata_map:
        return None
     return errata_map[release]['description']
+
+def release_ids_map(release) :
+    mapped_release = release_map(release)
+    if mapped_release == None:
+       return None
+    if not mapped_release in release_id_map:
+       return None
+    return release_id_map[mapped_release]
 
 package_description_map= {
     "ca-certificates":"The ca-certificates package contains a set of Certificate Authority (CA) certificates chosen by the Mozilla Foundation for use with the Internet Public Key Infrastructure (PKI).",
@@ -185,7 +223,7 @@ def get_ga_list() :
             if last_ga != None :
                 l_ga_list.append(last_ga)
             last_major = current_major
-            last_ga=release
+        last_ga=release
     if (last_ga != None) :
         l_ga_list.append(last_ga)
     return l_ga_list
@@ -204,7 +242,7 @@ def bug_create(release,version,nss_version,firefox_version,packages,token) :
     bug['summary'] = bug_summary%(year,version,nss_version,firefox_version,release)
     bug['description'] = bug_description%(version,nss_version)
     bug['priority'] = 'low'
-    bug['severify'] = 'low'
+    bug['severity'] = 'low'
     bug['keywords'] = ('Triaged','Rebase')
     bug['status'] = 'NEW'
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
@@ -215,7 +253,9 @@ def bug_create(release,version,nss_version,firefox_version,packages,token) :
     r = requests.post(url, headers=headers, json=bug,
                      verify=ca_certs_file)
     if r.status_code <= 299 :
-        return int(r.json()['id'])
+        json=r.json()
+        if not 'error' in  json :
+            return int(json['id'])
     print('bug create status=%d'%r.status_code)
     print('returned text=',r.text)
     return 0
@@ -377,7 +417,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     errata['product']='RHEL'
     errata['release']=release_name
     errata['advisory']=advisory
-    print("----------Creating errrata for "+release.strip())
+    print("----------Creating errata for "+release.strip())
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=errata_url_base+'/api/v1/erratum'
     r = requests.post(url, headers=headers, json=errata,
@@ -399,15 +439,11 @@ def errata_get_all_pages(url,paste,request_type) :
         print('text=',r.text)
         return None
     data = r.json()['data']
-    print("page 1 found")
     if 'page' in r.json() :
         page=r.json()['page']
-        print("page=",page)
         num_pages=page['total_pages']
-        print("num_pages =", num_pages)
         if num_pages != 1 :
             for i in range(2,num_pages+1) :
-                print("page",i)
                 url_page="%s%spage[number]=%d"%(url,paste,i)
                 r = requests.get(url_page, headers=headers,
                                  auth=HTTPKerberosAuth(),
@@ -416,21 +452,19 @@ def errata_get_all_pages(url,paste,request_type) :
                     print('errata %s page %d status=%d'%(request_type, i, r.status_code))
                     print('text=',r.text)
                     return None
-                print("page %d found"%i)
                 data=data+r.json()['data']
     return data
 
 def errata_lookup(release, version, firefox_version, packages, bugnumber) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     packages_list=packages.split(',')
-    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[name]=%s&synopsis_text=%s"%(release_map(release),packages_list[0])
+    search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[]=%s&synopsis_text=%s"%(release_ids_map(release),packages_list[0])
     url=errata_url_base + search_params
-    print('errata lookup url = ',url)
     r = requests.get(url, headers=headers,
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
     if r.status_code > 299 :
-        print('errrata lookup status=%d'%r.status_code)
+        print('errata lookup status=%d'%r.status_code)
         print('text=',r.text)
         return 0
     data=r.json()['data']
@@ -480,6 +514,9 @@ def errata_get_builds(errata, release) :
     return builds
 
 def errata_has_bug(errata, bug) :
+    # errata of -1 means this distro doesn't use errata
+    if errata == -1 :
+        return True
     bugs = errata_get_bugs(errata)
     for this_bug in bugs :
         if bug == int(this_bug) :
@@ -488,6 +525,9 @@ def errata_has_bug(errata, bug) :
 
 # return True if errata has all the builds attached
 def errata_has_builds(errata, release, builds) :
+    # errata of -1 means this distro doesn't use errata
+    if errata == -1 :
+        return True
     nvrlist = errata_get_builds(errata, release)
     for build in builds.split(',') :
         if not build in nvrlist :
@@ -495,6 +535,9 @@ def errata_has_builds(errata, release, builds) :
     return True
 
 def errata_resync_bug(errata, bug) :
+    # errata of -1 means this distro doesn't use errata
+    if errata == -1 :
+        return
     request= []
     request.append(bug)
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
@@ -510,6 +553,9 @@ def errata_resync_bug(errata, bug) :
 
 # add a bug to the errata
 def errata_add_bug(errata, bug, resync) :
+    # errata of -1 means this distro doesn't use errata
+    if errata == -1 :
+        return
     if errata_has_bug(errata, bug) :
         return
     if (resync) :
@@ -529,6 +575,9 @@ def errata_add_bug(errata, bug, resync) :
 
 # add builds to the errata
 def errata_add_builds(errata, release, builds) :
+    # errata of -1 means this distro doesn't use errata
+    if errata == -1 :
+        return
     nvr = errata_get_builds(errata, release)
     request= []
     # only add builds we haven't successfully added yet
@@ -718,19 +767,19 @@ def errata_merge_rpm_status(status, status2) :
     # in reverse order of precidence
     if status == 'PASSED':
         return status2
-    if state2 == 'PASSED':
+    if status2 == 'PASSED':
         return status
     # if they are equal, return them
     if status == status2 :
         return state
     # 'Pending' has the highest precidence
-    if status == 'PENDING' or status == 'PENDING' :
+    if status == 'PENDING' or status2 == 'PENDING' :
         return 'PENDING'
     # 'Running' has the highest precidence
-    if status == 'RUNNING' or status == 'RUNNING' :
+    if status == 'RUNNING' or status2 == 'RUNNING' :
         return 'RUNNING'
     # 'Failed' is next
-    if status == 'FAILED' or status == 'FAILED' :
+    if status == 'FAILED' or status2 == 'FAILED' :
         return 'FAILED'
     # now we know that 1) state != state2, and neither
     # is equal to 'Passed', 'Pending', 'Running' or 'Failed'
@@ -749,10 +798,10 @@ def errata_get_rpm_state(erratanumber, builds) :
     for rpmdiff in data :
         relationships = rpmdiff['relationships']
         if relationships['brew_build']['nvr'] in builds :
-            status = rpmdiff['status']
+            status = rpmdiff['attributes']['status']
             if 'superseded_by' in relationships:
                 status = relationships['status']
-            current_status = errata_merge_status(status, current_status)
+            current_status = errata_merge_rpm_status(status, current_status)
     return current_status
     
 def errata_get_state(erratanumber) :
@@ -764,6 +813,7 @@ def errata_set_state(erratanumber,newstate) :
 #    git helper functions
 #
 def git_files_exist(diff):
+    print("file exist diff=",diff)
     for cfile in diff.iter_change_type('M'):
         return True
     for cfile in diff.iter_change_type('A'):
@@ -782,22 +832,26 @@ def git_repo_state(repo):
     commit = repo.head.commit
     origin = repo.remotes.origin
     branch = repo.active_branch
+
     # staged means changes need committing
     if git_files_exist(index.diff(None)) :
         return 'staged'
     if git_files_exist(index.diff(commit)) :
         return 'staged'
     # committed mean changes are committed, but not pushed
+    if not branch.name in origin.refs :
+        return 'committed'
     if git_files_exist(commit.diff(origin.refs[branch.name])) :
         return 'committed'
     return 'pushed'
 
+
 def git_get_state(release, package, bugnumber):
-    repo = git.Repo(packages_dir[distro]+"%s/%s"%(package,release))
+    repo = git.Repo(get_git_packages_dir(distro,package,release))
     return git_repo_state(repo)
 
 def git_checkin(release, package, bugnumber):
-    gitdir=packages_dir[distro]+"%s/%s"%(package,release)
+    gitdir=get_git_packages_dir(distro,package,release)
     repo = git.Repo(gitdir)
     index = repo.index
     # first put all the files in 'staged'
@@ -824,12 +878,22 @@ def git_checkin(release, package, bugnumber):
     #do the checkin
     print("checking in:",gitdir)
     index.commit(message)
+    print("checked in:",gitdir)
     return git_repo_state(repo)
 
 def git_push(release, package, bugnumber):
-    gitdir=packages_dir[distro]+"%s/%s"%(package,release)
+    gitdir=get_git_packages_dir(distro,package,release)
     repo = git.Repo(gitdir)
-    repo.remotes.origin.push()
+    print("repo.remotes.origin", repo.remotes.origin)
+    if distro == 'centos' :
+        repo.remotes.origin.push("HEAD")
+    else :
+        repo.remotes.origin.push()
+    return git_repo_state(repo)
+
+def git_pull(gitdir):
+    repo = git.Repo(gitdir)
+    repo.remotes.origin.pull()
     return git_repo_state(repo)
 #
 #    local utility functions
@@ -916,7 +980,7 @@ def merge_state(state, state2) :
     return 'Building'
 
 def build_nvr(release,package):
-    packagedir=packages_dir[distro]+"%s/%s"%(package,release)
+    packagedir=get_git_packages_dir(distro,package,release)
     if not os.path.exists(packagedir):
         return None
     if not release in build_nvr.cache :
@@ -968,7 +1032,7 @@ def build(release,package):
     if state == 'Building' or state == 'Gating' :
         return ''
     # for failed, or nobuilds, time to make builds
-    packagedir=packages_dir[distro]+"%s/%s"%(package,release)
+    packagedir=get_build_packages_dir(distro,package,release)
 
     pushd=os.getcwd()
     os.chdir(packagedir)
@@ -980,13 +1044,14 @@ def build(release,package):
     # anything else, indicate the builds are not yet done
     return ''
 
+
 #######################################################
 #
 # argument parsing and configuration initialization
 #
 #######################################################
 try:
-    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:",["resync","get-ga"])
+    opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:",["resync","get-ga","getconfig="])
 except getopt.GetoptError as err:
     print(err)
     print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-b bugzillaurlbase]')
@@ -1002,17 +1067,19 @@ f = open(nssver_file, "r")
 nss_version=f.read().strip()
 f.close()
 
+has_firefox_version=True
 try:
     f = open(firefox_info, "r")
     firefox_version=f.read().strip()
     f.close()
 except :
-    print("No firefox_info file ("+firefox_info+") be sure to include -f option to specify the related firefox version on first call")
+    firefox_version=None
 
 year=datetime.date.today().strftime("%Y")
 
-for config in open(config_file, 'r'):
-    ( key, value) = config.strip().split(':',2)
+for config_line in open(config_file, 'r'):
+    ( key, value) = config_line.strip().split(':',1)
+    config[key]=value.strip()
     if key == 'manager':
        manager = value.strip()
     if key == 'owner':
@@ -1031,6 +1098,12 @@ for config in open(config_file, 'r'):
        bugzilla_login = value.strip()
     if key == 'bugzilla_password':
        bugzilla_password = value.strip()
+    if key == 'centos_fork':
+       centos_fork = value.strip()
+
+for release_id in open(release_id_file, 'r'):
+    ( rid, release) = release_id.strip().split(',',2)
+    release_id_map[release]=rid;
 
 for opt, arg in opts:
     if opt == '-r' :
@@ -1053,19 +1126,18 @@ for opt, arg in opts:
         resync = True
     elif opt == '--get-ga' :
         get_ga = True
+    elif opt == '--getconfig' :
+        if not arg in config:
+            print("No arg found");
+            sys.exit(3)
+        else:
+            print(config[arg]);
+        sys.exit(0)
 
 qe_line=''
 if  qe != None :
     qe_line=', "assign_to_email":"'+qe+'"'
 
-if firefox_version == None :
-    print("-f not specified!")
-    sys.exit(2)
-
-if not os.path.exists(firefox_info) :
-    f = open(firefox_info, "w")
-    f.write(firefox_version)
-    f.close()
 
 if bugzilla_login != None :
     bugzilla_token=bug_login(bugzilla_login,bugzilla_password)
@@ -1107,6 +1179,15 @@ if get_ga :
     print('')
     sys.exit(0)
 
+if firefox_version == None :
+    print("No firefox_info file ("+firefox_info+") be sure to include -f option to specify the related firefox version on first call")
+    sys.exit(2)
+
+if not os.path.exists(firefox_info) :
+    f = open(firefox_info, "w")
+    f.write(firefox_version)
+    f.close()
+
 rhel_packages = {}
 fedora_packages = {}
 
@@ -1145,6 +1226,10 @@ for fedora_entry in open(fedora_list, 'r'):
 #######################################################
 distro='rhel'
 for release in rhel_packages:
+    if release_is_centos_stream(release) :
+        distro='centos'
+    else :
+        distro='rhel'
     entry=rhel_packages[release]
     print("Processing release <%s>:"%release)
     if entry['state'] == 'complete' :
@@ -1191,10 +1276,15 @@ for release in rhel_packages:
         if git_state != 'pushed' :
               all_builds_pushed=False
         if git_state == 'pushed' and not builds_complete(entry['nvr'],package) :
+              # handle centos pull request here
+              if (distro == "centos") :
+                  git_pull(get_build_packages_dir(distro, package, release))
               nvr = build(release,package)
               entry['nvr'] = add_nvr(nvr,entry['nvr'])
     builds=entry['nvr']
     erratanumber=entry['erratanumber']
+    if distro == 'centos' :
+        erratanumber = -1
     all_builds_complete = builds_complete(builds, packages)
     print("  * setting up state")
     # update our state
@@ -1220,6 +1310,8 @@ for release in rhel_packages:
             entry['state'] = 'builds in an unknown state'
     elif erratanumber == 0 :
         entry['state'] = 'needs errata'
+    else :
+        entry['state'] = 'builds complete'
     print('  * handling errata')
     bug_state=bug_get_state(bugnumber)
     # once the builds are complete, put the bug in modified state
@@ -1232,7 +1324,8 @@ for release in rhel_packages:
         bug_state = bug_change_state(bugnumber, 'MODIFIED', bugzilla_token)
         bug_resync = True
     # and once our bug is modified, we can create the errata
-    erratanumber = errata_lookup(release, version, firefox_version, packages, bugnumber)
+    if erratanumber == 0 :
+        erratanumber = errata_lookup(release, version, firefox_version, packages, bugnumber)
     if erratanumber == 0 and bug_state == 'MODIFIED' :
         print("      * creating new errata")
         erratanumber = errata_create(release, version, firefox_version, packages, bugnumber)
@@ -1255,7 +1348,7 @@ for release in rhel_packages:
             if  errata_has_bug(erratanumber, bugnumber):
                  rpm_state = errata_get_rpm_state(erratanumber, entry['nvr'])
                  entry['state'] = 'rpm diff state ' + rpm_state
-                 if (rpm_state == 'PASSED' or rpm_state == 'WAIVED') :
+                 if (rpm_state == 'PASSED' or rpm_state == 'WAIVED' or rpm_state == 'INFO') :
                      entry['state'] = 'need to set to QE'
                      errata_state = errata_get_state(erratanumber)
                      if (errata_state != 'QE') :
