@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # vim:set et sw=4:
 #
 # certdata2pem.py - splits certdata.txt into multiple files
@@ -393,7 +393,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     # handle signular and plural verbs, adjust the packages to english
     verb='is'
     package_names=packages
-    if len(package_list) != 1 :
+    if len(packages_list) != 1 :
        verb='is'
        # replace just the last occurance of , with ' and ' and add a space to
        # the rest of the commas
@@ -402,7 +402,7 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     description=''
     for package in packages_list :
        description=description+package_description_map[package]+'\n\n'
-    description=description+description_base%(release_name,year,version,firefox_version)
+    description=description+description_base%(release_name,year,version,firefox_version,bugnumber)
     #now build the advisory
     advisory['errata_type']='RHBA'
     advisory['security_impact']='None'
@@ -411,15 +411,17 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     advisory['manager_email']=manager
     advisory['package_owner_email']=owner
     advisory['synopsis']=synopsis%package_names
-    advisory['topic']=topic_base%(package_names,verb,release_description, bugnumber)
+    advisory['topic']=topic_base%(package_names,verb,release_description)
     advisory['idsfixed']=bugnumber
     errata= {}
     errata['product']='RHEL'
     errata['release']=release_name
+    errata['release_id']=release_ids_map(release)
     errata['advisory']=advisory
     print("----------Creating errata for "+release.strip())
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=errata_url_base+'/api/v1/erratum'
+    print('errata=',errata)
     r = requests.post(url, headers=headers, json=errata,
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
@@ -813,7 +815,6 @@ def errata_set_state(erratanumber,newstate) :
 #    git helper functions
 #
 def git_files_exist(diff):
-    print("file exist diff=",diff)
     for cfile in diff.iter_change_type('M'):
         return True
     for cfile in diff.iter_change_type('A'):
@@ -1328,7 +1329,7 @@ for release in rhel_packages:
         erratanumber = errata_lookup(release, version, firefox_version, packages, bugnumber)
     if erratanumber == 0 and bug_state == 'MODIFIED' :
         print("      * creating new errata")
-        erratanumber = errata_create(release, version, firefox_version, packages, bugnumber)
+        erratanumber = errata_create(release, version, firefox_version, packages, year, bugnumber)
     if erratanumber != 0 :
         print("      * errata=%d"%erratanumber)
         entry['erratanumber'] = erratanumber
