@@ -390,14 +390,14 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     release_description=release_description_map(release)
     advisory= dict()
     packages_list=packages.split(',')
-    # handle signular and plural verbs, adjust the packages to english
+    # handle singular and plural verbs, adjust the packages to english
     verb='is'
     package_names=packages
     if len(packages_list) != 1 :
-       verb='is'
+       verb='are'
        # replace just the last occurance of , with ' and ' and add a space to
        # the rest of the commas
-       package_names=packages[::-1].replace(',',' dna ',1)[::-1].replace(',',', ')
+       package_names=packages[::-1].replace(',',' and ',1)[::-1].replace(',',', ')
     #build the description
     description=''
     for package in packages_list :
