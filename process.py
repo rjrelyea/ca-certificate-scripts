@@ -172,7 +172,7 @@ manager=None
 qe=None
 firefox_version=None
 bugzilla_login=None
-buzilla_password=None
+buzilla_api_key=None
 bugzilla_token=None
 solution="Before applying this update, make sure all previously released errata relevant to your system have been applied.\n\nFor details on how to apply this update, refer to:\n\nhttps://access.redhat.com/articles/11258"
 description_base="Bug Fix(es) and Enhancement(s):\n\n* Update ca-certificates package in %s to CA trust list version (%s) %s from Firefox %s (bug %d)\n"
@@ -248,7 +248,7 @@ def bug_create(release,version,nss_version,firefox_version,packages,token) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=bugzilla_url_base+"/rest/bug"
     if token != None :
-        url = url + '?' + token
+        headers['Authorization']=token
 
     r = requests.post(url, headers=headers, json=bug,
                      verify=ca_certs_file)
@@ -267,17 +267,19 @@ def bug_lookup(release, version, firefox_version, packages, token, zstream):
     summary=bug_summary_short%year
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     if zstream :
-        login=''
         last="&summary=%s"%release
         if token != None :
-           login=token + '&'
-           last=''
-        url=bugzilla_url_base+"/rest/bug?%sproduct=%s&component=%s&status=NEW&status=ASSIGNED&status=MODIFIED&status=ON_QA&cf_zstream_target_release=%s&cf_internal_target_release=---&limit=1&summary=%s%s"%(login,
+            headers['Authorization']=token
+            last=""
+        url=bugzilla_url_base+"/rest/bug?product=%s&component=%s&status=NEW&status=ASSIGNED&status=MODIFIED&status=ON_QA&cf_zstream_target_release=%s&cf_internal_target_release=---&limit=1&summary=%s%s"%(
             product_map(release), packages_list[0],
             map_zstream_release(release), summary, last)
+        print ("zstream lookup url=",url)
     else:
         url=bugzilla_url_base+"/rest/bug?product=%s&component=%s&version=%s&status=NEW&status=ASSIGNED&status=MODIFIED&status=ON_QA&limit=1&summary=%s"%(product_map(release),
              packages_list[0],bug_version_map(release),summary)
+        print ("ystream lookup url=",url)
+    print ("headers=",headers)
     r = requests.get(url, headers=headers, verify=ca_certs_file)
     if r.status_code <= 299 :
         bugs = r.json()['bugs']
@@ -289,26 +291,15 @@ def bug_lookup(release, version, firefox_version, packages, token, zstream):
     print('returned text=',r.text)
     return 0
 
-def bug_login(login, password):
-    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
-    url=bugzilla_url_base+"/rest/login?login=%s&password=%s"%(login,password)
-    r = requests.get(url, headers=headers, verify=ca_certs_file)
-    if r.status_code <= 299 :
-        token = r.json()['token']
-        bugzilla_token="token="+token
-        return "token="+token
-    print('bug login status=%d'%r.status_code)
-    print('returned text=',r.text)
-    return None
+def bug_login(login, api_key):
+    return "Bearer "+bugzilla_api_key
 
 # check if the bug has all it's required acks for checkin
 def bug_is_acked(bugnumber, name, token) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
-    url=bugzilla_url_base+"/rest/bug/%d"%bugnumber
+    url=bugzilla_url_base+"/rest/bug/%d?include_fields=flags"%bugnumber
     if token != None :
-        url += '?' + token + '&include_fields=flags'
-    else :
-        url += '?include_fields=flags'
+        headers['Authorization']=token
     r = requests.get(url, headers=headers, verify=ca_certs_file)
     if r.status_code > 299 :
         print('bug acked status=%d'%r.status_code)
@@ -338,7 +329,7 @@ def bug_set_flag(bugnumber, name, status, token):
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=bugzilla_url_base+"/rest/bug/%d"%bugnumber
     if token != None :
-        url = url + '?' + token
+        headers['Authorization']=token
 
     r = requests.put(url, headers=headers, json=bug,
                      verify=ca_certs_file)
@@ -368,8 +359,9 @@ def bug_change_state(bugnumber, state, token):
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=bugzilla_url_base+"/rest/bug/%d"%bugnumber
     if token != None :
-        url = url + '?' + token
+        headers['Authorization']=token
 
+    print ("headers=",headers)
     r = requests.put(url, headers=headers, json=bug,
                      verify=ca_certs_file)
     if r.status_code <= 299 :
@@ -421,12 +413,11 @@ def errata_create(release, version, firefox_version, packages, year, bugnumber) 
     print("----------Creating errata for "+release.strip())
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     url=errata_url_base+'/api/v1/erratum'
-    print('errata=',errata)
     r = requests.post(url, headers=headers, json=errata,
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
     if r.status_code <= 299 :
-        return r.json()['id']
+        return r.json()['errata']['rhba']['id']
     print('errata create status=%d'%r.status_code)
     print('returned text=',r.text)
     return 0
@@ -1097,8 +1088,8 @@ for config_line in open(config_file, 'r'):
        bugzilla_url_base = value.strip()
     if key == 'bugzilla_login':
        bugzilla_login = value.strip()
-    if key == 'bugzilla_password':
-       bugzilla_password = value.strip()
+    if key == 'bugzilla_api_key':
+       bugzilla_api_key = value.strip()
     if key == 'centos_fork':
        centos_fork = value.strip()
 
@@ -1141,7 +1132,7 @@ if  qe != None :
 
 
 if bugzilla_login != None :
-    bugzilla_token=bug_login(bugzilla_login,bugzilla_password)
+    bugzilla_token=bug_login(bugzilla_login,bugzilla_api_key)
 
 #
 # initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to

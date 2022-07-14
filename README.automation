@@ -1,4 +1,4 @@
-Ca-certificates automation, updated Aug 26, 2021
+Ca-certificates automation, updated Jul 14, 2022
 
 For the theory of ca-certificates update, see README.md.
 
@@ -73,12 +73,16 @@ following:
     ownerr:{errata owner's email}
     qe:{errata qa's email}
     bugzilla_login:{bugzilla login}
-    bugzilla_password:{bugzilla password}
+    bugzilla_apikey:{bugzilla apikey}
 
 A sample config.cfg.sample is included. config.cfg is in .gitignore to prevent
-pushing your private password to the public repository.
+pushing your private apikey to the public repository. You can get an apikey
+from bugzilla by going to https://bugzilla.redhat.com/userprefs.cgi?tab=apikey
+and following the instructions. Be sure to copy the API key from the bugzilla
+UI as soon as it's created. Once you leave the page, it will no longer be
+available.
 
-If you don't include a bugzilla login/password, ./process.py may not be able
+If you don't include a bugzilla apikey, ./process.py may not be able
 find z-stream bugs, as well as create or modify bugs.
 If you don't supply manager, owner, or qe, ./process.py will not be able to
 create erratas.
@@ -174,6 +178,6 @@ each run everything is refreshed except bug and errata numbers, and state=comple
 
 ./meta/fedora.list includes the current state for fedora. Fedora does not
 require acks on the bugs, do anything with errata. Fedora updates currently
-need to be manually involked.
+need to be manually invoked.
 
 
