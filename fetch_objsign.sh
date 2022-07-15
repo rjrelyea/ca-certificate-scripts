@@ -3,8 +3,10 @@
 # This script fetches the object signing list from the Microsoft list. It then
 # mergest that list into the fetched certdata.txt.
 #
-baseurl="https://ccadb-public.secure.force.com/microsoft/IncludedRootsPEMTxtForMSFT?TrustBitsInclude=Code%20Signing"
-target="microsoft_code_siging.pem"
+#baseurl="https://ccadb-public.secure.force.com/microsoft/IncludedRootsPEMTxtForMSFT?TrustBitsInclude=Code%20Signing"
+#target="microsoft_code_siging.pem"
+baseurl="https://gist.githubusercontent.com/richlander/800fcac88d595cea225649b76a5361f4/raw/f7f340ec81e81503a6518d0fbb701ff978dc87bd/"
+target="codesignctl.pem"
 certdata="./certdata.txt"
 merge=1
 diff=0

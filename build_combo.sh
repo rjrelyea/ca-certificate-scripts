@@ -22,8 +22,8 @@ RHEL_NSS=0
 RHEL_OPENSSL=0
 RHEL_CACERTS=0
 FEDORA_CACERTS=0
-PRUNE_DATE=today
-MERGE_OBJECT_SIGN=0
+PRUNE_DATE='NEVER'
+MERGE_OBJECT_SIGN=1
 RHEL_LIST=${META_DATA}/rhel.list
 FEDORA_LIST=${META_DATA}/fedora.list
 
@@ -694,13 +694,13 @@ do
 done
 for i in ${RHEL7}
 do
-   echo "**************************** nss $i ******************************"
-   nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel7_5/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
-   errors=$(expr $errors + $?)
+   #echo "**************************** nss $i ******************************"
+   #nss_update ${PACKAGES}/nss/$i ${MODIFIED}/rhel7_5/nss/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i
+   #errors=$(expr $errors + $?)
    echo "********************** ca-certificates $i *************************"
    cacertificates_update ${PACKAGES}/ca-certificates/$i ${MODIFIED}/rhel7_5/ca-certificates/certdata.txt ${CACERTS}/nssckbi.h $nss_version $ckbi_version ${SCRATCH} $i "70.0" "71"
    errors=$(expr $errors + $?)
-   echo $i:ca-certificates,nss:0:0::staged >> ${RHEL_LIST}
+   echo $i:ca-certificates:0:0::staged >> ${RHEL_LIST}
 done
 for i in ${RHEL8}
 do

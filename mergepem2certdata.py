@@ -146,11 +146,13 @@ for opt, arg in opts:
         dateString = arg
 
 # parse dateString
+print ("datastring=",dateString)
 verifyDate = True
 if dateString.upper() == "NEVER":
    verifyDate = False
 else:
    date = getdate(dateString)
+print ("verifyDate=",verifyDate)
 
 
 # read the pem file
@@ -265,11 +267,12 @@ for certval in pemcerts:
                 label=cert.subject.get_attributes_for_oid(x509.oid.NameOID.ORGANIZATION_NAME)[0].value
             except:
                 label="Unknown Certificate"
-    if cert.not_valid_after <= date:
-        print("  Skipping code signing cert %s"%label)
-        print("     Expires: %s"%cert.not_valid_after.strftime("%m/%d/%Y"))
-        print("     Prune time %s: "%date.strftime("%m/%d/%Y"))
-        continue
+    if verifyDate :
+        if cert.not_valid_after <= date:
+            print("  Skipping code signing cert %s"%label)
+            print("     Expires: %s"%cert.not_valid_after.strftime("%m/%d/%Y"))
+            print("     Prune time %s: "%date.strftime("%m/%d/%Y"))
+            continue
     certhashsha1 = cert.fingerprint(hashes.SHA1())
     certhashmd5 =  cert.fingerprint(hashes.MD5())
     
