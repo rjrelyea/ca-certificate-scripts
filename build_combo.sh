@@ -57,6 +57,33 @@ mklog()
     echo "*${log_date} ${name} <$email> - ${vr}"
 }
 
+bumprelease()
+{
+    release=$1
+    reset_release=$2
+    #strip any characters from the end
+    release=${release%%[^.0-9]*}
+
+    # if we are not updating ca, certficates,
+    # bump to the next full release number
+    # (5.1 -> 6, 7->8 etc.)
+    if [ -z ${reset_release} ]; then
+       expr ${release%%[^0-9]*} + 1
+    else
+       # if we are updating ca-certicates package,
+       # preserve the minor release number, so
+       # 80.0 -> 80.1, 81->82 etc.
+       base=${release%.*}
+       bump=${release##*.}
+       if [ ${bump} == ${base} ]; then
+          expr ${base} + 1
+       else
+          bump=$(expr ${bump} + 1)
+          echo "${base}.${bump}"
+       fi
+    fi
+}
+
 addpatch()
 {
    SPEC=$1
@@ -130,15 +157,17 @@ addpatch()
 # update the version if we've supplied it, otherwise not the version for the log
     echo $line | grep "^Version: " > /dev/null
     if [ $? -eq 0 ]; then
-        # if we have a new version number, replace it, 
+        # if we have a new version number, replace it,
         # if not remember the old one for our log
 	if [ -z ${new_version} ]; then
 	    echo "$line"
 	    version=`echo $line | sed -e 's;^Version: ;;'`
 	    version=`echo $version | sed -e 's;%{nss_version};'${glob_nss_version}';g'`
 	else
+	    oldversion=`echo $line | sed -e 's;^Version: ;;'`
 	    version=${new_version}
             echo "Version: ${version}"
+            echo "Old Version: ${oldversion}" 1>&2
             echo "New Version: ${version}" 1>&2
         fi
         continue
@@ -146,11 +175,12 @@ addpatch()
 # update the release
     echo $line | grep "^Release: " > /dev/null
     if [ $?  -eq 0 ]; then
-	if [ -z ${new_version} ]; then
+        # we bump the release number if 1) we are updating a non-ca-certificate
+        # package (like openssl or nss), or 2) we are updating an existing
+        # ca-certificate package with the same version number.
+	if [ -z ${new_version} - o ${new_version} == ${oldversion} ]; then
 	    release=`echo $line | sed -e 's;^Release: ;;'`
-            # this magic strips the leading number and increments it, so 5.1
-            # becomes 6. NOTE: It's probably better if we increment 5.1 to be 5.2
-            release=$(expr ${release%%[^0-9]*} + 1)
+            release=$(bumprelease ${release} ${restart_release})
 	else
 	    release=${restart_release}
 	fi
@@ -241,7 +271,7 @@ openssl_update()
    python sort-bundle.py
    # check out output
    echo ">>> verify against the old bundle."
-   diff ./old-ca-bundle.crt sorted-new > /dev/null 
+   diff ./old-ca-bundle.crt sorted-new > /dev/null
    if [ $? -eq 0 ]; then
 	echo "Skipping openssl build for ${RELEASE}. ca-bundle.crt is already up to date";
 	return 0
@@ -252,7 +282,7 @@ openssl_update()
    # update our spec file
    cd ${OPENSSLPACKAGEDIR}
    echo ">>> update openssl.spec"
-   addpatch openssl.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} 
+   addpatch openssl.spec NONE  empty ${SCRATCH}/cert_log ${nss_version} ${ckbi_version}
    if [ ${verbose} -eq 1 ]; then
       git --no-pager diff openssl.spec
    fi
@@ -305,7 +335,7 @@ nss_update()
         return 1
    fi
    ${SCRIPT_LOC}/check_certs.sh ./nss/lib/ckfw/builtins/certdata.txt $CERTDATA > ${SCRATCH}/cert_log
-   diff ./nss/lib/ckfw/builtins/certdata.txt ${CERTDATA} > /dev/null 
+   diff ./nss/lib/ckfw/builtins/certdata.txt ${CERTDATA} > /dev/null
    if [ $? -eq 0 ]; then
 	echo "Skipping nss build for ${RELEASE}. certdata is already up to date";
 	return 0
@@ -318,7 +348,7 @@ nss_update()
    gendiff . .ca-${ckbi_version} > ${SCRATCH}/SOURCES/nss-${RELEASE}-ca-${ckbi_version}.patch
    cd ${SCRATCH}/SPECS
    echo ">>> update nss.spec"
-   addpatch nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch .ca-${ckbi_version} ${SCRATCH}/cert_log ${nss_version} ${ckbi_version} 
+   addpatch nss.spec nss-${RELEASE}-ca-${ckbi_version}.patch .ca-${ckbi_version} ${SCRATCH}/cert_log ${nss_version} ${ckbi_version}
    echo ">>> verify updated nss.spec"
    rpmbuild -bp nss.spec --define="%_topdir ${SCRATCH}" --quiet --nodeps
    if [ $? -ne 0 ]; then
@@ -381,7 +411,7 @@ cacertificates_update()
    cp ${CERTDATA} .
    cp ${NSSCKBI} .
    if [ ${verbose} -eq 1 ]; then
-   	git --no-pager diff ca-certificates.spec 
+   	git --no-pager diff ca-certificates.spec
    fi
    git add ca-certificate.spec nssckbi.h certdata.txt
    if [ ${verbose} -eq 1 ]; then
@@ -583,7 +613,7 @@ if [ ${RHEL_CACERTS} -eq 1 ]; then
         # pull requests from the for.
         echo ">> fetching centos ca-certificates"
         # first fetch the centos stream directory
-        cd centos 
+        cd centos
         echo centpkg clone -a rpms/ca-certificates
         centpkg clone -a rpms/ca-certificates
         cd ca-certificates
