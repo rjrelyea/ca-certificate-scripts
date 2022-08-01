@@ -178,7 +178,7 @@ addpatch()
         # we bump the release number if 1) we are updating a non-ca-certificate
         # package (like openssl or nss), or 2) we are updating an existing
         # ca-certificate package with the same version number.
-	if [ -z ${new_version} - o ${new_version} == ${oldversion} ]; then
+	if [ -z ${new_version} -o "${new_version}" == "${oldversion}" ]; then
 	    release=`echo $line | sed -e 's;^Release: ;;'`
             release=$(bumprelease ${release} ${restart_release})
 	else

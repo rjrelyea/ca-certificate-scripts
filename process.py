@@ -798,10 +798,45 @@ def errata_get_rpm_state(erratanumber, builds) :
     return current_status
     
 def errata_get_state(erratanumber) :
-    return 'QE'
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    url=errata_url_base+"/api/v1/erratum/%d"%erratanumber
+    r = requests.get(url, headers=headers,
+                     auth=HTTPKerberosAuth(),
+                     verify=ca_certs_file)
+    if r.status_code >  299 :
+        print('errata get builds status=%d'%r.status_code)
+        print('text=',r.text)
+        return 'UNKNOWN'
+    if len(r.json()) == 0 :
+        return 'UNKNOWN'
+    errata=r.json()
+    if not 'errata' in errata :
+        return 'UNKNOWN'
+    if 'rhba' in errata['errata'] :
+        return errata['errata']['rhba']['status']
+    elif 'rhea' in errata['errata'] :
+        return errata['errata']['rhea']['status']
+    elif 'rhsa' in errata['errata'] :
+        return errata['errata']['rhsa']['status']
+    return 'UNKNOWN'
 
 def errata_set_state(erratanumber,newstate) :
-    return 'QE';
+    # errata of -1 means this distro doesn't use errata
+    if erratanumber == -1 :
+        return 'UNKOWN'
+    request= {}
+    request['new_state'] = newstate
+    headers= { 'Content-type':'application/json', 'Accept':'application/json' }
+    url=errata_url_base+"/api/v1/erratum/%d/change_state"%erratanumber
+    r = requests.post(url, headers=headers, json=request,
+                     auth=HTTPKerberosAuth(),
+                     verify=ca_certs_file)
+    if r.status_code <= 299 :
+        return errata_get_state(erratanumber)
+    print('errata change state to %s status=%d'%(newstate,r.status_code))
+    print('text=',r.text)
+    return 'UNKNOWN'
+
 #
 #    git helper functions
 #
@@ -1051,13 +1086,19 @@ except getopt.GetoptError as err:
 
 resync=False
 get_ga=False
-f = open(ckbiver_file, "r")
-version=f.read().strip()
-f.close()
+try:
+    f = open(ckbiver_file, "r")
+    version=f.read().strip()
+    f.close()
+except :
+    version=None
 
-f = open(nssver_file, "r")
-nss_version=f.read().strip()
-f.close()
+try:
+    f = open(nssver_file, "r")
+    nss_version=f.read().strip()
+    f.close()
+except :
+    nss_version=None
 
 has_firefox_version=True
 try:
@@ -1333,6 +1374,12 @@ for release in rhel_packages:
         entry['state'] = 'need builds attached'
         if  not errata_has_builds(erratanumber, release, builds):
             print("      * adding builds to errata")
+            errata_state = errata_get_state(erratanumber)
+            print("         - errata in state ",errata_state)
+            # revert the errata to NEW_FILES if it's on QE
+            if (errata_state == 'QE') :
+                errata_state = errata_set_state(erratanumber,"NEW_FILES")
+                print("         - errata in new state ",errata_state)
             errata_add_builds(erratanumber, release, builds)
         # finally, once the builds are build and attached to the errata, mark this release complete
         if errata_has_builds(erratanumber, release, builds):
@@ -1343,8 +1390,10 @@ for release in rhel_packages:
                  if (rpm_state == 'PASSED' or rpm_state == 'WAIVED' or rpm_state == 'INFO') :
                      entry['state'] = 'need to set to QE'
                      errata_state = errata_get_state(erratanumber)
-                     if (errata_state != 'QE') :
+                     print("         - errata in state ",errata_state)
+                     if (errata_state == 'NEW_FILES' or errata_state == 'UNKNOWN' ) :
                          errata_state = errata_set_state(erratanumber,"QE")
+                         print("         - errata in new state ",errata_state)
                      if (errata_state == 'QE') :
                          entry['state'] = 'complete'
 

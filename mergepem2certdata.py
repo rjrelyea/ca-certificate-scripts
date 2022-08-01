@@ -118,6 +118,40 @@ def isDistrusted(obj) :
         return False
     return obj['CKA_TRUST_SERVER_AUTH'] == 'CKT_NSS_NOT_TRUSTED' and obj['CKA_TRUST_EMAIL_PROTECTION'] == 'CKT_NSS_NOT_TRUSTED' and obj['CKA_TRUST_CODE_SIGNING'] == 'CKT_NSS_NOT_TRUSTED'
 
+
+def stripQuotes(label) :
+    if label[:1] == "\"" :
+        label=label[1:]
+    if label[-1] == "\"" :
+        label = label[:-1]
+    return label
+
+# another object of the same class has the same label
+def labelExists(objlist, obj) :
+    for iobj in objlist:
+        if obj['CKA_CLASS'] == iobj['CKA_CLASS'] and obj['CKA_LABEL'] == iobj['CKA_LABEL']:
+            return True
+    return False
+
+# add an object, make sure that label is unique
+def addObj(objlist, newObj, specialLabel, drop) :
+    label = stripQuotes(newObj['CKA_LABEL'])
+    count=1
+    if specialLabel != None :
+        count=0
+        label=label+' '+specialLabel
+    # make sure the label is unique
+    while labelExists(objlist, newObj) :
+        if drop :
+            return 'DROPPED'
+        if count != 0 :
+            newObj['CKA_LABEL'] = "\"%s %d\""%(label,count)
+        else :
+            newObj['CKA_LABEL'] = "\"%s\""%label
+        count=count+1
+    objlist.append(obj)
+    return stripQuotes(newObj['CKA_LABEL'])
+
 try:
     opts, args = getopt.getopt(sys.argv[1:],"c:o:p:t:l:x:",)
 except getopt.GetoptError as err:
@@ -195,7 +229,7 @@ for line in open(certdata, 'r'):
         # collect all the inline comments in this object
         obj['Comment'] += comment
         comment = ""
-        objects.append(obj)
+        addObj(objects, obj, None, False)
         obj = dict()
         in_obj = False
         continue
@@ -234,8 +268,9 @@ for line in open(certdata, 'r'):
         binval = bytearray()
         continue
     obj[field] = value
+
 if len(list(obj.items())) > 0:
-    objects.append(obj)
+    addObj(objects, obj, None, False)
 
 # strip out expired certificates from certdata.txt
 if verifyDate :
@@ -326,7 +361,9 @@ for certval in pemcerts:
     obj['CKA_NSS_MOZILLA_CA_POLICY'] = 'CK_FALSE'
     obj['CKA_NSS_SERVER_DISTRUST_AFTER'] = 'CK_FALSE'
     obj['CKA_NSS_EMAIL_DISTRUST_AFTER'] = 'CK_FALSE'
-    objects.append(obj)
+    label = addObj(objects, obj, 'CodeSigning', True)
+    if label == 'DROPPED' :
+        continue
 
     # append the trust values
     obj=dict()
@@ -346,7 +383,7 @@ for certval in pemcerts:
        else:
           obj[t] = 'CKT_NSS_MUST_VERIFY_TRUST'
     obj['CKA_TRUST_STEP_UP_APPROVED'] = 'CK_FALSE'
-    objects.append(obj)
+    label = addObj(objects, obj, 'CodeSigning', True)
     print('Adding code signing cert "'+label+'"');
 
 # now dump the results
