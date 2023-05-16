@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python3
 #
 # certdata-upstream-to-certdata-rhel.py
 # Copyright (C) 2017-2018 Kai Engert <kaie@redhat.com>
@@ -31,7 +31,7 @@ import os.path
 import re
 import sys
 import textwrap
-import urllib
+import urllib.request, urllib.parse, urllib.error
 from optparse import OptionParser
 
 o = OptionParser()
@@ -114,7 +114,7 @@ if options.add_legacy_codesign:
             field, type = line_parts
             value = None
         else:
-            raise NotImplementedError, 'line_parts < 2 not supported.\n' + line
+            raise NotImplementedError('line_parts < 2 not supported.\n' + line)
 
         if field == 'CKA_CLASS' and value == 'CKO_NSS_TRUST':
             in_trust = True
@@ -131,7 +131,7 @@ if options.add_legacy_codesign:
         obj[field] = value
 
     # end of file reached, add the started obj, if it has data
-    if len(obj.items()) > 0:
+    if len(list(obj.items())) > 0:
         codesign_reference_objects.append(obj)
 # end of PHASE: prepare code_signing_whitelist
 
@@ -209,7 +209,7 @@ for line in open(options.input, 'r'):
         field, type = line_parts
         value = None
     else:
-        raise NotImplementedError, 'line_parts < 2 not supported.\n' + line
+        raise NotImplementedError('line_parts < 2 not supported.\n' + line)
 
     if field == 'CKA_NSS_MOZILLA_CA_POLICY' and not options.with_ca_policy:
         # Skip if we don't have options.with_ca_policy.
@@ -329,7 +329,7 @@ if options.add_legacy_1024bit:
             field, type = line_parts
             value = None
         else:
-            raise NotImplementedError, 'line_parts < 2 not supported.\n' + line
+            raise NotImplementedError('line_parts < 2 not supported.\n' + line)
 
         if field == 'CKA_NSS_MOZILLA_CA_POLICY':
             # Skip. We'll add that later, if requested by options.with_ca_policy

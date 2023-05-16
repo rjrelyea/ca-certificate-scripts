@@ -600,6 +600,12 @@ fi
 nss_version=`grep "NSS_VERSION" nss.h | awk '{print $3}' | sed -e "s;\";;g" `
 ckbi_version=`grep "NSS_BUILTINS_LIBRARY_VERSION " nssckbi.h | awk '{print $NF}' | sed -e "s;\";;g" `
 
+if [ -f codesign-release.txt ]; then
+    mcs_version=$(cat codesign-release.txt)
+    if [[ $ms_version != "unknown" ]]; then
+        ckbi_version="${ckbi_version}-${mcs_version}"
+    fi
+fi
 echo ${nss_version} > ${META_DATA}/nssversion.txt
 echo ${ckbi_version} > ${META_DATA}/ckbiversion.txt
 
