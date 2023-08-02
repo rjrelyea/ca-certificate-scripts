@@ -178,7 +178,7 @@ addpatch()
         # we bump the release number if 1) we are updating a non-ca-certificate
         # package (like openssl or nss), or 2) we are updating an existing
         # ca-certificate package with the same version number.
-	if [ -z ${new_version} -o "${new_version}" == "${oldversion}" ]; then
+	if [ -z ${new_version} ] || [ "${new_version}" = "${oldversion}" ]; then
 	    release=`echo $line | sed -e 's;^Release: ;;'`
             release=$(bumprelease ${release} ${restart_release})
 	else
@@ -603,7 +603,7 @@ ckbi_version=`grep "NSS_BUILTINS_LIBRARY_VERSION " nssckbi.h | awk '{print $NF}'
 if [ -f codesign-release.txt ]; then
     mcs_version=$(cat codesign-release.txt)
     if [[ $ms_version != "unknown" ]]; then
-        ckbi_version="${ckbi_version}-${mcs_version}"
+        ckbi_version="${ckbi_version}_${mcs_version}"
     fi
 fi
 echo ${nss_version} > ${META_DATA}/nssversion.txt
