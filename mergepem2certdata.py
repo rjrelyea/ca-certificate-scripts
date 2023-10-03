@@ -30,7 +30,7 @@ import subprocess
 import getopt
 import asn1
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from datetime import datetime
 from dateutil.parser import parse
 
@@ -276,7 +276,7 @@ if len(list(obj.items())) > 0:
 if verifyDate :
     for obj in objects:
         if obj['CKA_CLASS'] == 'CKO_CERTIFICATE' :
-            cert = x509.load_der_x509_certificate(obj['CKA_VALUE'])
+            cert = x509.load_der_x509_certificate(bytes(obj['CKA_VALUE']))
             if (cert.not_valid_after <= date) :
                 trust_obj = getTrust(objects,obj['CKA_SERIAL_NUMBER'],obj['CKA_ISSUER'])
                 # we don't remove distrusted expired certificates
@@ -328,6 +328,32 @@ for certval in pemcerts:
         found = True
         print('Updating "'+label+'" with code signing');
         break
+    if  found :
+        continue
+
+    # check for almost duplicates, certs with the same subject and key, but
+    # different values. If they exist, treat them as the same certificate
+    for obj in objects:
+        if obj['CKA_CLASS'] != 'CKO_CERTIFICATE':
+            continue
+        # do they have the same subject?
+        if obj['CKA_SUBJECT'] != cert.subject.public_bytes():
+            continue
+        # do they have the same public key?
+        cert2 = x509.load_der_x509_certificate(bytes(obj['CKA_VALUE']))
+        if cert2.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo) != cert.public_key().public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo) :
+            continue
+        #found now update trust record
+        trust_obj = getTrust(objects,obj['CKA_SERIAL_NUMBER'],obj['CKA_ISSUER'])
+        if trust_obj is None :
+            print('Couldn\'t find trust object for "'+obj['CKA_LABEL']);
+            exit
+        trust_obj[trust] = 'CKT_NSS_TRUSTED_DELEGATOR'
+        found = True
+        print('Updating sister certificate "'+obj['CKA_LABEL']+'" with code signing based on Microsoft "'+label+'"');
+        break
+        if found :
+            break
     if  found :
         continue
     # append this certificate
