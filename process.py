@@ -29,7 +29,10 @@ import requests
 import json
 import git
 import datetime
+import jira
+
 from requests_kerberos import HTTPKerberosAuth
+from jira import JIRAError
 
 
 rhel_list='./meta/rhel.list'
@@ -51,6 +54,16 @@ bug_description='Update CA certificates to version %s from NSS %s for our annual
 distro=None
 
 #
+# Jira
+#
+
+JIRA_PROJ = 'RHEL'
+JIRA_ISSUE_TYPE = 'Bug'
+
+
+JIRA_OPTIONS = {'server': 'https://issues.redhat.com',
+                'verify': False}
+
 # define differences between rhel and
 # fedora releases
 #
@@ -260,6 +273,7 @@ def bug_create(release,version,nss_version,firefox_version,packages,token) :
     print('returned text=',r.text)
     return 0
 
+
 # look up a bug based on the description. this is to find cloned z-stream bugs
 # which we didn't create from your script
 def bug_lookup(release, version, firefox_version, packages, token, zstream):
@@ -369,6 +383,70 @@ def bug_change_state(bugnumber, state, token):
     print('bug change state status=%d'%r.status_code)
     print('returned text=',r.text)
     return bug_get_state(bugnumber)
+
+#
+#    Jira helper function
+#
+def issue_create(release, version, nss_version, firefox_version, packages, jira):
+    package = packages.split(',')[0]
+
+    issue_metadata = {
+        'project': {'key': JIRA_PROJ},
+        'issuetype': {'name': JIRA_ISSUE_TYPE},
+        'summary': bug_summary%(year,version,nss_version,firefox_version,release),
+        'description': bug_description%(version,nss_version),
+        'fixVersions' : [{'name': release}],
+        'components': [{'name': package}],
+        'priority': {'name': 'Minor'},
+        'security': {'name': 'Red Hat Employee'},
+        'labels': ["Triaged", "Rebase"],
+    }
+
+    try:
+        new_issue = jira.create_issue(fields=issue_metadata)
+    except JIRAError as e:
+        print(f'Issue couldn\'t be created: {e}');
+        return 0;
+    return new_issue
+
+def issue_lookup(jira, release, version, packages, zstream):
+    package = packages.split(',')[0]
+    summary=bug_summary_short%year
+
+    jql_query = (f'project={JIRA_PROJ} AND '
+                 f'issuetype={JIRA_ISSUE_TYPE} AND '
+                 f'component={package} AND '
+                 f'summary~"{summary}" AND '
+                 f'fixVersion={release}')
+
+    try:
+        issues = jira.search_issues(jql_query)
+    except JIRAError as e:
+        print(e);
+
+    if len(issues) != 1:
+        print(f'Found {len(issues)} issues matching {summary}')
+        return null;
+
+    return issues[0];
+
+def jira_login(token):
+    try:
+        jira = jira.JIRA(options=JIRA_OPTIONS, token_auth=token)
+    except JIRAError as e:
+        print(e);
+        return None;
+
+    return jira
+
+def issue_get_state(issue):
+    return issue.fields.status
+
+def issue_set_state(jira, state):
+    if state not in jira_states:
+        return issue_get_state(issue)
+    jira.transition_issue(issue, 'New')
+    return issue_get_state(issue)
 
 #
 #    Errata helper function
