@@ -46,22 +46,18 @@ errata_cache_file='./errata_cache'
 errata_url_base='https://errata.devel.redhat.com'
 brew_url_base='https://brewweb.engineering.redhat.com/brew'
 koji_url_base='https://koji.fedoraproject.org/koji'
+jira_url_base='https://issues.redhat.com'
 ca_certs_file='/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
 bug_summary_short='Annual %s ca-certificates update'
 bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s [%s]'
 bug_description='Update CA certificates to version %s from NSS %s for our annual CA certficate update.'
 distro=None
 
-#
 # Jira
-#
-
 JIRA_PROJ = 'RHEL'
 JIRA_ISSUE_TYPE = 'Bug'
 
 
-JIRA_OPTIONS = {'server': 'https://issues.redhat.com',
-                'verify': False}
 
 # define differences between rhel and
 # fedora releases
@@ -183,11 +179,11 @@ owner=None
 manager=None
 qe=None
 firefox_version=None
-bugzilla_login=None
-buzilla_api_key=None
-bugzilla_token=None
+jira_api_key=None
+Jira=None
+
 solution="Before applying this update, make sure all previously released errata relevant to your system have been applied.\n\nFor details on how to apply this update, refer to:\n\nhttps://access.redhat.com/articles/11258"
-description_base="Bug Fix(es) and Enhancement(s):\n\n* Update ca-certificates package in %s to CA trust list version (%s) %s from Firefox %s (bug %d)\n"
+description_base="Bug Fix(es) and Enhancement(s):\n\n* Update ca-certificates package in %s to CA trust list version (%s) %s from Firefox %s (bug %s)\n"
 synopsis="%s bug fix and enhancement update"
 topic_base="An update for %s %s now available for %s."
 checkin_log="checkin.log"
@@ -240,11 +236,14 @@ def get_ga_list() :
         l_ga_list.append(last_ga)
     return l_ga_list
 
-
 #
 #    Jira helper function
 #
-def issue_create(release, version, nss_version, firefox_version, packages, jira):
+# For future development, the issue has to be loaded again after a update
+# see. issue_change_state
+
+# create a new issue and return the issue number and issue reference
+def issue_create(jira, release, version, nss_version, firefox_version, packages):
     package = packages.split(',')[0]
 
     issue_metadata = {
@@ -263,9 +262,10 @@ def issue_create(release, version, nss_version, firefox_version, packages, jira)
         new_issue = jira.create_issue(fields=issue_metadata)
     except JIRAError as e:
         print(f'Issue couldn\'t be created: {e}');
-        return 0;
-    return new_issue
+        return 0, None
+    return new_issue.key, new_issue;
 
+# lookup an issue and return the issue number and issue reference
 def issue_lookup(jira, release, version, packages, zstream):
     package = packages.split(',')[0]
     summary=bug_summary_short%year
@@ -283,27 +283,33 @@ def issue_lookup(jira, release, version, packages, zstream):
 
     if len(issues) != 1:
         print(f'Found {len(issues)} issues matching {summary}')
-        return null;
+        return "0", None
 
-    return issues[0];
+    return issues[0].key, issues[0];
 
-def jira_login(token):
+# return the issue state
+def issue_get_state(issue):
+    return str(issue.fields.status)
+
+# change the issue state
+def issue_change_state(jira, issue, state):
     try:
-        jira = jira.JIRA(options=JIRA_OPTIONS, token_auth=token)
+        jira.transition_issue(issue, state)
+    except JIRAError as e:
+        print(f'Couldn\'t transition to {state}: {e}');
+
+    # Refresh issue details
+    issue = jira.issue(issue.key)
+
+    return issue_get_state(issue)
+
+def issue_get(jira,bugnumber):
+    try:
+        issue = jira.issue(bugnumber)
     except JIRAError as e:
         print(e);
         return None;
-
-    return jira
-
-def issue_get_state(issue):
-    return issue.fields.status
-
-def issue_set_state(jira, state):
-    if state not in jira_states:
-        return issue_get_state(issue)
-    jira.transition_issue(issue, 'New')
-    return issue_get_state(issue)
+    return issue
 
 #
 #    Errata helper function
@@ -383,7 +389,7 @@ def errata_get_all_pages(url,paste,request_type) :
                 data=data+r.json()['data']
     return data
 
-def errata_lookup(release, version, firefox_version, packages, bugnumber) :
+def errata_lookup(release, version, firefox_version, packages) :
     headers= { 'Content-type':'application/json', 'Accept':'application/json' }
     packages_list=packages.split(',')
     search_params="/api/v1/erratum/search?show_state_NEW_FILES=1&show_state_QE=1&product[]=16&release[]=%s&synopsis_text=%s"%(release_ids_map(release),packages_list[0])
@@ -835,8 +841,8 @@ def git_checkin(release, package, bugnumber):
     f=open("%s/%s"%(gitdir,checkin_log),"r")
     message=f.read()
     f.close()
-    if bugnumber != -1 :
-        message="Resolves: rhbz#%s\n\n"%bugnumber + message
+    if bugnumber != "-1" :
+        message="Resolves: %s\n\n"%bugnumber + message
     #do the checkin
     print("checking in:",gitdir)
     index.commit(message)
@@ -1016,7 +1022,7 @@ try:
     opts, args = getopt.getopt(sys.argv[1:],"r:o:m:q:v:f:y:e:",["resync","get-ga","getconfig="])
 except getopt.GetoptError as err:
     print(err)
-    print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-b bugzillaurlbase]')
+    print(sys.argv[0] + ' [-r rhel.list] [-o owner.email] [-m manager.email] [-q qa.email] [-v ckbi.version] [-f firefox.version] [-y year] [-e errataurlbase] [-j jiraaurlbase]')
     sys.exit(2)
 
 resync=False
@@ -1060,14 +1066,12 @@ for config_line in open(config_file, 'r'):
        firefox_version = value.strip()
     if key == 'errata_url':
        errata_url_base = value.strip()
-    if key == 'bugzilla_url':
-       bugzilla_url_base = value.strip()
-    if key == 'bugzilla_login':
-       bugzilla_login = value.strip()
-    if key == 'bugzilla_api_key':
-       bugzilla_api_key = value.strip()
     if key == 'centos_fork':
        centos_fork = value.strip()
+    if key == 'jira_url':
+       jira_url_base = value.strip()
+    if key == 'jira_api_key':
+       jira_api_key = value.strip()
 
 for release_id in open(release_id_file, 'r'):
     ( rid, release) = release_id.strip().split(',',2)
@@ -1088,8 +1092,8 @@ for opt, arg in opts:
         year = arg
     elif opt == '-e' :
         errata_url_base = arg
-    elif opt == '-b' :
-        bugzilla_url_base = arg
+    elif opt == '-j' :
+        jira_url_base = arg
     elif opt == '--resync' :
         resync = True
     elif opt == '--get-ga' :
@@ -1107,8 +1111,15 @@ if  qe != None :
     qe_line=', "assign_to_email":"'+qe+'"'
 
 
-if bugzilla_login != None :
-    bugzilla_token=bug_login(bugzilla_login,bugzilla_api_key)
+if jira_api_key != None:
+    options = {'server': jira_url_base,
+               'verify': True}
+    try:
+        Jira = jira.JIRA(options=options, token_auth=jira_api_key)
+    except JIRAError as e:
+        print(e);
+
+
 
 #
 # initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to
@@ -1169,7 +1180,7 @@ for rhel_entry in open(rhel_list, 'r'):
     entry=dict()
     print('release=',release,'packages=',packages,'bugnumber=',bugnumber,'erratanumber=',erratanumber,'nvr=',nvr,'state=',state)
     entry['packages']=packages
-    entry['bugnumber']=int(bugnumber)
+    entry['bugnumber']=bugnumber
     entry['erratanumber']=int(erratanumber)
     entry['nvr']=nvr
     entry['state']=state
@@ -1180,7 +1191,7 @@ for fedora_entry in open(fedora_list, 'r'):
     entry=dict()
     print('release=',release,'packages=',packages,'bugnumber=',bugnumber,'erratanumber=',erratanumber,'nvr=',nvr,'state=',state)
     entry['packages']=packages
-    entry['bugnumber']=int(bugnumber)
+    entry['bugnumber']=bugnumber
     entry['erratanumber']=int(erratanumber)
     entry['nvr']=nvr
     entry['state']=state
@@ -1205,30 +1216,32 @@ for release in rhel_packages:
         continue
     bugnumber=entry['bugnumber']
     packages=entry['packages']
+    issue = None
 
     print("  * handling bugs")
-    if bugnumber == 0 :
+    if bugnumber == "0" :
         # we need bug numbers so that we can commit our changes
         if get_need_zstream_clone(release) :
             # lookup cloned bug number
-            bugnumber=bug_lookup(release,version,firefox_version,packages,bugzilla_token,True)
-            if bugnumber == 0 :
+            bugnumber,issue=issue_lookup(Jira,release,version,packages,True)
+            if bugnumber == "0" :
                 print(">>>>parent bug not cloned yet");
                 entry['state']='waiting bug clone'
                 continue
             entry['bugnumber']=bugnumber
         else :
             # first lookup the bug to see if it has already been created
-            bugnumber=bug_lookup(release,version,firefox_version,packages,None,False)
-            if bugnumber == 0:
+            bugnumber,issue=issue_lookup(Jira,release,version,packages,False)
+            if bugnumber == "0":
                 # nope, create it now
-                bugnumber=bug_create(release,version,nss_version,firefox_version,packages,bugzilla_token)
-                if bugnumber == 0 :
-                    print(">>>>couldn't create bug");
+                bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,packages)
+                if bugnumber == "0":
                     entry['state']='need bug'
                     continue
             entry['bugnumber']=bugnumber
-    print("      * bug=%d"%bugnumber)
+    print("      * bug=%s"%bugnumber)
+    if issue == None :
+        issue = issue_get(Jira,bugnumber)
     # if we are here, we have our bug created for our release, we can check it in
     all_builds_pushed=True
     print("  * checking git tree status")
@@ -1238,7 +1251,7 @@ for release in rhel_packages:
         print("      * package<%s> state=%s"%(package,git_state))
         if git_state == 'staged' :
               git_state = git_checkin(release, package, bugnumber)
-        if git_state == 'committed' and bug_is_acked(bugnumber,'release',bugzilla_token) :
+        if git_state == 'committed':
               print('trying to push')
               git_state = git_push(release, package, bugnumber)
         if git_state != 'pushed' :
@@ -1256,9 +1269,7 @@ for release in rhel_packages:
     all_builds_complete = builds_complete(builds, packages)
     print("  * setting up state")
     # update our state
-    if not bug_is_acked(bugnumber,'release', bugzilla_token):
-        entry['state'] = 'bug needs ack'
-    elif not all_builds_pushed :
+    if not all_builds_pushed :
         entry['state'] = 'builds need push'
     elif not all_builds_complete :
         state = None
@@ -1281,19 +1292,17 @@ for release in rhel_packages:
     else :
         entry['state'] = 'builds complete'
     print('  * handling errata')
-    bug_state=bug_get_state(bugnumber)
+    bug_state=issue_get_state(issue)
     # once the builds are complete, put the bug in modified state
     bug_resync = False
     if bug_state == 'NEW' :
-        bug_state = bug_change_state(bugnumber, 'ASSIGNED', bugzilla_token)
-    if not bug_is_acked(bugnumber,'devel_ack',bugzilla_token) :
-        bug_state = bug_set_flag(bugnumber, 'devel_ack', '+', bugzilla_token)
+        bug_state = issue_change_state(Jira, issue, 'ASSIGNED')
     if all_builds_pushed and (bug_state == 'NEW' or bug_state == 'ASSIGNED') :
-        bug_state = bug_change_state(bugnumber, 'MODIFIED', bugzilla_token)
+        bug_state = issue_change_state(Jira, issue, 'MODIFIED')
         bug_resync = True
     # and once our bug is modified, we can create the errata
     if erratanumber == 0 :
-        erratanumber = errata_lookup(release, version, firefox_version, packages, bugnumber)
+        erratanumber = errata_lookup(release, version, firefox_version, packages)
     if erratanumber == 0 and bug_state == 'MODIFIED' :
         print("      * creating new errata")
         erratanumber = errata_create(release, version, firefox_version, packages, year, bugnumber)
@@ -1303,7 +1312,7 @@ for release in rhel_packages:
     # finally, once we have our errata and builds, attach them
     if erratanumber != 0 and (bug_state == 'MODIFIED' or bug_state == 'ON_QA') :
         if not errata_has_bug(erratanumber,bugnumber) :
-            print("      * adding bug %d to  errata"%bugnumber)
+            print("      * adding bug %s to  errata"%bugnumber)
             errata_add_bug(erratanumber, bugnumber, bug_resync)
     if erratanumber != 0 and all_builds_complete :
         entry['state'] = 'need builds attached'
@@ -1340,7 +1349,7 @@ for release in fedora_packages:
     if entry['state'] == 'complete' :
         print("  * complete!")
         continue
-    bugnumber=-1
+    bugnumber="-1"
     packages=entry['packages']
     all_builds_pushed=True
     print("  * checking git tree status")
@@ -1393,7 +1402,7 @@ for release in rhel_packages :
     bugnumber=entry['bugnumber']
     erratanumber=entry['erratanumber']
     packages=entry['packages']
-    f.write("%s:%s:%d:%d:%s:%s\n"%(release,packages,bugnumber,
+    f.write("%s:%s:%s:%d:%s:%s\n"%(release,packages,bugnumber,
             erratanumber,entry['nvr'],entry['state']))
 f.close()
 print("Updating %s"%fedora_list)
@@ -1403,7 +1412,7 @@ for release in fedora_packages :
     bugnumber=entry['bugnumber']
     erratanumber=entry['erratanumber']
     packages=entry['packages']
-    f.write("%s:%s:%d:%d:%s:%s\n"%(release,packages,bugnumber,
+    f.write("%s:%s:%s:%d:%s:%s\n"%(release,packages,bugnumber,
             erratanumber,entry['nvr'],entry['state']))
 f.close()
 
@@ -1420,10 +1429,10 @@ for release in rhel_packages :
     bugnumber=entry['bugnumber']
     erratanumber=entry['erratanumber']
     packages=entry['packages']
-    print("%s: state='%s' bug=%d errata=%d"%(release,entry['state'],bugnumber,erratanumber))
-    if bugnumber != 0:
-        print("    %s/show_bug.cgi?id=%d"%(bugzilla_url_base,bugnumber))
-    if erratanumber != 0:
+    print("%s: state='%s' bug=%s errata=%d"%(release,entry['state'],bugnumber,erratanumber))
+    if bugnumber != "0":
+        print("    %s/show_bug.cgi?id=%s"%(Jira_url_base,bugnumber))
+    if erratanumber != "0":
         print("    %s/advisory/%d"%(errata_url_base,erratanumber))
     for package in packages.split(',') :
         (task, nvr, state) = build_get_info(release, package)
