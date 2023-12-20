@@ -1,8 +1,8 @@
 owner:package_owner@redhat.com
 manager:package_owner_manager@redhat.com
 qe:package_qe@redhat.com
-bugzilla_login:bugzilla@redhat.com
-bugzilla_api_key:xxStringfromAPIkeysinUserPrefs
+jira_url:https://issues.redhat.com
+jira_api_key:xxStringFromJiraProfilePersonalAccessTokens
 centos_fork:git@gitlab.com:package_owner/ca-certificates.git
 #firefox:91
 #version:2.48
