@@ -271,9 +271,12 @@ def issue_create(jira, release, version, nss_version, firefox_version, packages)
     return new_issue.key, new_issue;
 
 # lookup an issue and return the issue number and issue reference
-def issue_lookup(jira, release, version, packages, zstream):
+def issue_lookup(jira, release, version, packages, zstream=False):
     package = packages.split(',')[0]
     summary=bug_summary_short%year
+
+    if zstream :
+        release += ".z"
 
     jql_query = (f'project={JIRA_PROJ} AND '
                  f'issuetype={JIRA_ISSUE_TYPE} AND '
@@ -292,6 +295,21 @@ def issue_lookup(jira, release, version, packages, zstream):
 
     return issues[0].key, issues[0];
 
+def issue_request_clone(jira, release, version, packages):
+    package = packages.split(',')[0]
+    summary=bug_summary_short%year
+
+    _, issue = issue_lookup(jira, release, version, packages)
+    if issue == None:
+        return False
+
+    try:
+        # Request Clone for all active z-streams
+        issue.update({'customfield_12323242' : {'id' : "33996" }})
+    except JIRAError as e:
+        print(e)
+
+    return True
 
 # return the issue state
 def issue_get_state(issue):
@@ -903,7 +921,7 @@ def gitlab_find_mr(upstream_project, source_branch, source_project_id):
         if mr.source_branch == source_branch and \
            mr.source_project_id == source_project_id and \
            mr.title == (bug_summary_short % year) and \
-           mr.description == ("Resolves: %s\n\n" % bugnumber):
+           ("Resolves: %s" % bugnumber) in mr.description:
             return mr
     return None
 
@@ -1290,9 +1308,8 @@ for release in rhel_packages:
         # we need bug numbers so that we can commit our changes
         if get_need_zstream_clone(release) :
             # lookup cloned bug number
-            bugnumber,issue=issue_lookup(Jira,release,version,packages)
+            bugnumber,issue=issue_lookup(Jira,release,version,packages,zstream=True)
             if bugnumber == "0" :
-                print(">>>>parent bug not cloned yet");
                 entry['state']='waiting bug clone'
                 continue
             entry['bugnumber']=bugnumber
@@ -1302,9 +1319,14 @@ for release in rhel_packages:
             if bugnumber == "0":
                 # nope, create it now
                 bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,packages)
+
                 if bugnumber == "0":
                     entry['state']='need bug'
                     continue
+
+                # Request clone right away
+                issue_request_clone(Jira, release, version, packages)
+
             entry['bugnumber']=bugnumber
     print("      * bug=%s"%bugnumber)
     if issue == None :
