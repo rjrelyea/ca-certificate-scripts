@@ -279,13 +279,14 @@ def issue_lookup(jira, release, version, packages, zstream):
     try:
         issues = jira.search_issues(jql_query)
     except JIRAError as e:
-        print(e);
+        print(e)
 
     if len(issues) != 1:
         print(f'Found {len(issues)} issues matching {summary}')
         return "0", None
 
     return issues[0].key, issues[0];
+
 
 # return the issue state
 def issue_get_state(issue):
@@ -529,7 +530,7 @@ def errata_add_builds(errata, release, builds) :
     r = requests.post(url, headers=headers, json=request,
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
-    if r.status_code <= 299 :
+    if r.status_code <= 299 or r.status == 401:
         return
     print('errata add builds status=%d'%r.status_code)
     print('text=',r.text)
@@ -1223,7 +1224,7 @@ for release in rhel_packages:
         # we need bug numbers so that we can commit our changes
         if get_need_zstream_clone(release) :
             # lookup cloned bug number
-            bugnumber,issue=issue_lookup(Jira,release,version,packages,True)
+            bugnumber,issue=issue_lookup(Jira,release,version,packages)
             if bugnumber == "0" :
                 print(">>>>parent bug not cloned yet");
                 entry['state']='waiting bug clone'
@@ -1231,7 +1232,7 @@ for release in rhel_packages:
             entry['bugnumber']=bugnumber
         else :
             # first lookup the bug to see if it has already been created
-            bugnumber,issue=issue_lookup(Jira,release,version,packages,False)
+            bugnumber,issue=issue_lookup(Jira,release,version,packages)
             if bugnumber == "0":
                 # nope, create it now
                 bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,packages)
