@@ -30,6 +30,7 @@ import json
 import git
 import datetime
 import jira
+import gitlab
 
 from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
@@ -47,6 +48,7 @@ errata_url_base='https://errata.devel.redhat.com'
 brew_url_base='https://brewweb.engineering.redhat.com/brew'
 koji_url_base='https://koji.fedoraproject.org/koji'
 jira_url_base='https://issues.redhat.com'
+glab_url_base='https://gitlab.com/'
 ca_certs_file='/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
 bug_summary_short='Annual %s ca-certificates update'
 bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s [%s]'
@@ -181,6 +183,9 @@ qe=None
 firefox_version=None
 jira_api_key=None
 Jira=None
+GLab=None
+CentOSFork=None
+centos_fork=None
 
 solution="Before applying this update, make sure all previously released errata relevant to your system have been applied.\n\nFor details on how to apply this update, refer to:\n\nhttps://access.redhat.com/articles/11258"
 description_base="Bug Fix(es) and Enhancement(s):\n\n* Update ca-certificates package in %s to CA trust list version (%s) %s from Firefox %s (bug %s)\n"
@@ -814,7 +819,6 @@ def git_repo_state(repo):
         return 'committed'
     return 'pushed'
 
-
 def git_get_state(release, package, bugnumber):
     repo = git.Repo(get_git_packages_dir(distro,package,release))
     return git_repo_state(repo)
@@ -864,6 +868,54 @@ def git_pull(gitdir):
     repo = git.Repo(gitdir)
     repo.remotes.origin.pull()
     return git_repo_state(repo)
+
+#
+#    GitLab
+#
+
+def gitlab_src_from_fork(repo_fork):
+    if project.forked_from_project:
+        source_project_id = project.forked_from_project['id']
+        source_project = gl.projects.get(source_project_id)
+        print(f"Source Project: {source_project.web_url}")
+        return source_project
+    else:
+        print("The project is not a fork.")
+        return None
+
+def gitlab_create_mr(repo_fork, repo_target, bugnumber, branch='main'):
+    arguments = {
+        'source_branch': branch,
+        'target_branch': branch,
+        'target_project_id' : repo_target.id,
+        'assignee_id' : GITLAB.user.id,
+        'title': (bug_summary_short % year),
+        'description' : ("Resolves: %s\n\n" % bugnumber),
+    }
+
+    mr = repo_fork.mergerequests.create(arguments)
+
+    return mr
+
+def gitlab_find_mr(upstream_project, source_branch, source_project_id):
+    mrs = upstream_project.mergerequests.list()
+    for mr in mrs:
+        if mr.source_branch == source_branch and \
+           mr.source_project_id == source_project_id and \
+           mr.title == (bug_summary_short % year) and \
+           mr.description == ("Resolves: %s\n\n" % bugnumber):
+            return mr
+    return None
+
+def gitlab_get_mr_status():
+    mr = gitlab_find_mr(upstream_project, source_branch, source_project_id)
+    if mr == None:
+        print("Couldn't find the MR")
+        return "Not found"
+
+    return mr.state;
+
+
 #
 #    local utility functions
 #
@@ -1073,6 +1125,10 @@ for config_line in open(config_file, 'r'):
        jira_url_base = value.strip()
     if key == 'jira_api_key':
        jira_api_key = value.strip()
+    if key == 'gitlab_url':
+       glab_url_base = value.strip()
+    if key == 'gitlab_api_key':
+       glab_api_key = value.strip()
 
 for release_id in open(release_id_file, 'r'):
     ( rid, release) = release_id.strip().split(',',2)
@@ -1095,6 +1151,8 @@ for opt, arg in opts:
         errata_url_base = arg
     elif opt == '-j' :
         jira_url_base = arg
+    elif opt == '-l' :
+        glab_url_base = arg
     elif opt == '--resync' :
         resync = True
     elif opt == '--get-ga' :
@@ -1120,7 +1178,15 @@ if jira_api_key != None:
     except JIRAError as e:
         print(e);
 
+if glab_api_key != None:
+    try:
+        GLab = gitlab.Gitlab(url=glab_url_base, private_token=glab_api_key)
+        GLab.auth()
+    except gitlab.exceptions.GitlabError as e:
+        print(e);
 
+if GLab != None and centos_fork != None:
+    CentOSFork = GITLAB.projects.get(centos_fork.replace(glab_url_base, ""))
 
 #
 # initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to
