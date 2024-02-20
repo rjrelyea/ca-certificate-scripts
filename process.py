@@ -126,7 +126,7 @@ def safe_int(a) :
     return b
 
 def release_is_centos_stream(release) :
-    if safe_int(release_get_major(release)) < 9 :
+    if safe_int(release_get_major(release)) < 8 :
        return False
     return not get_need_zstream_clone(release)
 
