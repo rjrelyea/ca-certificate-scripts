@@ -1326,7 +1326,18 @@ for release in rhel_packages:
         if git_state == 'pushed' and not builds_complete(entry['nvr'],package) :
               # handle centos pull request here
               if (distro == "centos") :
-                  git_pull(get_build_packages_dir(distro, package, release))
+                    mr = gitlab_find_mr(gitlab_src_from_fork(CentOSFork), 'main',
+                                        CentOSFork.id)
+                    if (mr == None):
+                        gitlab_create_mr(CentOSFork, gitlab_src_from_fork(CentOSFork),
+                                              bugnumber, branch='main')
+                    elif (mr.state == "merged"):
+                        git_pull(get_build_packages_dir(distro, package, release))
+                    else:
+                        print(f"Merge request status: {mr.state}");
+                        entry['state'] = 'waiting centos merge'
+                        continue
+
               nvr = build(release,package)
               entry['nvr'] = add_nvr(nvr,entry['nvr'])
     builds=entry['nvr']
