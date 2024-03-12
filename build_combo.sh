@@ -413,7 +413,7 @@ cacertificates_update()
    if [ ${verbose} -eq 1 ]; then
    	git --no-pager diff ca-certificates.spec
    fi
-   git add ca-certificate.spec nssckbi.h certdata.txt
+   git add ca-certificates.spec nssckbi.h certdata.txt
    if [ ${verbose} -eq 1 ]; then
        git status
    fi

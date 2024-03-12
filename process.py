@@ -30,6 +30,7 @@ import json
 import git
 import datetime
 import jira
+import gitlab
 
 from requests_kerberos import HTTPKerberosAuth
 from jira import JIRAError
@@ -47,6 +48,7 @@ errata_url_base='https://errata.devel.redhat.com'
 brew_url_base='https://brewweb.engineering.redhat.com/brew'
 koji_url_base='https://koji.fedoraproject.org/koji'
 jira_url_base='https://issues.redhat.com'
+glab_url_base='https://gitlab.com/'
 ca_certs_file='/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
 bug_summary_short='Annual %s ca-certificates update'
 bug_summary = bug_summary_short+ ' version %s from NSS %s for Firefox %s [%s]'
@@ -126,7 +128,7 @@ def safe_int(a) :
     return b
 
 def release_is_centos_stream(release) :
-    if safe_int(release_get_major(release)) < 9 :
+    if safe_int(release_get_major(release)) < 8 :
        return False
     return not get_need_zstream_clone(release)
 
@@ -181,6 +183,9 @@ qe=None
 firefox_version=None
 jira_api_key=None
 Jira=None
+GLab=None
+CentOSFork=None
+centos_fork=None
 
 solution="Before applying this update, make sure all previously released errata relevant to your system have been applied.\n\nFor details on how to apply this update, refer to:\n\nhttps://access.redhat.com/articles/11258"
 description_base="Bug Fix(es) and Enhancement(s):\n\n* Update ca-certificates package in %s to CA trust list version (%s) %s from Firefox %s (bug %s)\n"
@@ -266,9 +271,12 @@ def issue_create(jira, release, version, nss_version, firefox_version, packages)
     return new_issue.key, new_issue;
 
 # lookup an issue and return the issue number and issue reference
-def issue_lookup(jira, release, version, packages, zstream):
+def issue_lookup(jira, release, version, packages, zstream=False):
     package = packages.split(',')[0]
     summary=bug_summary_short%year
+
+    if zstream :
+        release += ".z"
 
     jql_query = (f'project={JIRA_PROJ} AND '
                  f'issuetype={JIRA_ISSUE_TYPE} AND '
@@ -279,13 +287,29 @@ def issue_lookup(jira, release, version, packages, zstream):
     try:
         issues = jira.search_issues(jql_query)
     except JIRAError as e:
-        print(e);
+        print(e)
 
     if len(issues) != 1:
         print(f'Found {len(issues)} issues matching {summary}')
         return "0", None
 
     return issues[0].key, issues[0];
+
+def issue_request_clone(jira, release, version, packages):
+    package = packages.split(',')[0]
+    summary=bug_summary_short%year
+
+    _, issue = issue_lookup(jira, release, version, packages)
+    if issue == None:
+        return False
+
+    try:
+        # Request Clone for all active z-streams
+        issue.update({'customfield_12323242' : {'id' : "33996" }})
+    except JIRAError as e:
+        print(e)
+
+    return True
 
 # return the issue state
 def issue_get_state(issue):
@@ -529,7 +553,7 @@ def errata_add_builds(errata, release, builds) :
     r = requests.post(url, headers=headers, json=request,
                      auth=HTTPKerberosAuth(),
                      verify=ca_certs_file)
-    if r.status_code <= 299 :
+    if r.status_code <= 299 or r.status == 401:
         return
     print('errata add builds status=%d'%r.status_code)
     print('text=',r.text)
@@ -813,7 +837,6 @@ def git_repo_state(repo):
         return 'committed'
     return 'pushed'
 
-
 def git_get_state(release, package, bugnumber):
     repo = git.Repo(get_git_packages_dir(distro,package,release))
     return git_repo_state(repo)
@@ -863,6 +886,54 @@ def git_pull(gitdir):
     repo = git.Repo(gitdir)
     repo.remotes.origin.pull()
     return git_repo_state(repo)
+
+#
+#    GitLab
+#
+
+def gitlab_src_from_fork(repo_fork):
+    if project.forked_from_project:
+        source_project_id = project.forked_from_project['id']
+        source_project = gl.projects.get(source_project_id)
+        print(f"Source Project: {source_project.web_url}")
+        return source_project
+    else:
+        print("The project is not a fork.")
+        return None
+
+def gitlab_create_mr(repo_fork, repo_target, bugnumber, branch='main'):
+    arguments = {
+        'source_branch': branch,
+        'target_branch': branch,
+        'target_project_id' : repo_target.id,
+        'assignee_id' : GITLAB.user.id,
+        'title': (bug_summary_short % year),
+        'description' : ("Resolves: %s\n\n" % bugnumber),
+    }
+
+    mr = repo_fork.mergerequests.create(arguments)
+
+    return mr
+
+def gitlab_find_mr(upstream_project, source_branch, source_project_id):
+    mrs = upstream_project.mergerequests.list()
+    for mr in mrs:
+        if mr.source_branch == source_branch and \
+           mr.source_project_id == source_project_id and \
+           mr.title == (bug_summary_short % year) and \
+           ("Resolves: %s" % bugnumber) in mr.description:
+            return mr
+    return None
+
+def gitlab_get_mr_status():
+    mr = gitlab_find_mr(upstream_project, source_branch, source_project_id)
+    if mr == None:
+        print("Couldn't find the MR")
+        return "Not found"
+
+    return mr.state;
+
+
 #
 #    local utility functions
 #
@@ -1072,6 +1143,10 @@ for config_line in open(config_file, 'r'):
        jira_url_base = value.strip()
     if key == 'jira_api_key':
        jira_api_key = value.strip()
+    if key == 'gitlab_url':
+       glab_url_base = value.strip()
+    if key == 'gitlab_api_key':
+       glab_api_key = value.strip()
 
 for release_id in open(release_id_file, 'r'):
     ( rid, release) = release_id.strip().split(',',2)
@@ -1094,6 +1169,8 @@ for opt, arg in opts:
         errata_url_base = arg
     elif opt == '-j' :
         jira_url_base = arg
+    elif opt == '-l' :
+        glab_url_base = arg
     elif opt == '--resync' :
         resync = True
     elif opt == '--get-ga' :
@@ -1119,7 +1196,15 @@ if jira_api_key != None:
     except JIRAError as e:
         print(e);
 
+if glab_api_key != None:
+    try:
+        GLab = gitlab.Gitlab(url=glab_url_base, private_token=glab_api_key)
+        GLab.auth()
+    except gitlab.exceptions.GitlabError as e:
+        print(e);
 
+if GLab != None and centos_fork != None:
+    CentOSFork = GITLAB.projects.get(centos_fork.replace(glab_url_base, ""))
 
 #
 # initialize our map of release names (rhel-8.1.0, rhel-7.9, etc.) to
@@ -1223,21 +1308,25 @@ for release in rhel_packages:
         # we need bug numbers so that we can commit our changes
         if get_need_zstream_clone(release) :
             # lookup cloned bug number
-            bugnumber,issue=issue_lookup(Jira,release,version,packages,True)
+            bugnumber,issue=issue_lookup(Jira,release,version,packages,zstream=True)
             if bugnumber == "0" :
-                print(">>>>parent bug not cloned yet");
                 entry['state']='waiting bug clone'
                 continue
             entry['bugnumber']=bugnumber
         else :
             # first lookup the bug to see if it has already been created
-            bugnumber,issue=issue_lookup(Jira,release,version,packages,False)
+            bugnumber,issue=issue_lookup(Jira,release,version,packages)
             if bugnumber == "0":
                 # nope, create it now
                 bugnumber,issue=issue_create(Jira,release,version,nss_version,firefox_version,packages)
+
                 if bugnumber == "0":
                     entry['state']='need bug'
                     continue
+
+                # Request clone right away
+                issue_request_clone(Jira, release, version, packages)
+
             entry['bugnumber']=bugnumber
     print("      * bug=%s"%bugnumber)
     if issue == None :
@@ -1259,7 +1348,18 @@ for release in rhel_packages:
         if git_state == 'pushed' and not builds_complete(entry['nvr'],package) :
               # handle centos pull request here
               if (distro == "centos") :
-                  git_pull(get_build_packages_dir(distro, package, release))
+                    mr = gitlab_find_mr(gitlab_src_from_fork(CentOSFork), 'main',
+                                        CentOSFork.id)
+                    if (mr == None):
+                        gitlab_create_mr(CentOSFork, gitlab_src_from_fork(CentOSFork),
+                                              bugnumber, branch='main')
+                    elif (mr.state == "merged"):
+                        git_pull(get_build_packages_dir(distro, package, release))
+                    else:
+                        print(f"Merge request status: {mr.state}");
+                        entry['state'] = 'waiting centos merge'
+                        continue
+
               nvr = build(release,package)
               entry['nvr'] = add_nvr(nvr,entry['nvr'])
     builds=entry['nvr']
